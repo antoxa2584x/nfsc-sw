@@ -1,0 +1,102 @@
+[
+ {
+  "start": "0x00312D7B",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x002EA16C",
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x002F2DB7",
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00314C3F",
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00325469",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00018F70",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x000BFE70",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x002F5F15",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x0030D123",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x0031797B",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x00317989",
+  "note": "Direct call/jump target lifted as an unresolved stub; decodes as a function body in a gap."
+ },
+ {
+  "start": "0x002F6BE6",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0030D146",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00311FC2",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00307751",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00307E42",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x003197B6",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x003197BB",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0039B15C",
+  "note": "XPP function after zero padding; reached through 0x0039BF34 and lifted as an unresolved stub, so USB never started."
+ },
+ {
+  "start": "0x0039BD9A",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0030B87A",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0030B870",
+  "note": "Jump thunk next to 0x0030B87A (vtable entries); decodes as a function body."
+ },
+ {
+  "start": "0x0030B875",
+  "note": "Jump thunk next to 0x0030B87A (vtable entries); decodes as a function body."
+ },
+ {
+  "start": "0x0039D01D",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0039C5C9",
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ }
+]
