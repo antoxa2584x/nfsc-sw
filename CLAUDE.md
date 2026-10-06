@@ -85,6 +85,44 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   also for rep movs/stos block forms and MEMF/MEMD/SMEM64 via mmio_rewrite.py),
   and D3D, D3DX, XGRPH are lifted device-aware (regen.sh --mmio-sections).
   Game code (.text) writing through a tiled pointer would still fault.
+- **Perf ports from NFSU2 (2026-10-06):** toolkit synced to nfsu2-xbox
+  66b876d (off-screen batch culling, Vulkan instancing, render-scale edge
+  snap, C/LFE downmix). Native leaves found by byte-matching NFSU2's bodies
+  (RECOMP_NATIVE=0 off, RECOMP_NATIVE_CHECK=1 compares; 0 mismatches in a
+  Linux career race): _ftol2 0x32C47C, SSE 4x4 mul 0x2EFCB4 / D3D 0x35EE20,
+  box x matrix 0xFE4E0, frustum box 0x103F50 (Carbon sums in another order
+  and its K/K2 are 0x3A3C28/0x3A3880), 0x5D1F0, 0x5DC70, 0x48B60.
+  RECOMP_FRAME_LAG=1: the renderer sub_00112B60 starts each frame with
+  sub_0010B240 = BlockOnFence([0x45C254], ret 0x10B24B) + Swap.
+- **3.7 fps for good after ~90 s (console, VK, 2026-10-06):** every frame
+  `FLIP_STALL: no flip retired in 250 ms`, read == write alternating 1/0.
+  The vblank/PGRAPH wrappers read D3D's retire counter (+0x1BC) before
+  taking the dispatch lock, so a retire by the other handler in between
+  was counted twice and the executor's flip index ran one off (with two
+  buffers, never recovers). Fixed both ways: counter read at DISPATCH, and
+  a FLIP_STALL timeout steps flip_read (resync). Same code in nfsu2-xbox,
+  patched there too (its "stutter after ~30 min" may be this).
+- **Car through hittable objects (fixed, Linux-verified):** props (signs,
+  cones) become Smackables via the ESpawnSmackable event (vtable 0x3BEF78,
+  handler sub_001D38C0 -> factory sub_000255A0 -> creator sub_00200340 ->
+  ctor sub_001FF4A0). The handler asks the car `[vt+0x24]` = sub_002A87D0
+  "may not smack?"; its jne at 0x2A8813 is reached from `test al, al` (jmp)
+  and `inc al` (fall-through), the flag states did not merge and it lifted
+  as `if (_flags)` -- never taken -> always "may not". Toolkit fix
+  (translator.py `_materialised_joins`, test_flag_join_materialise.py): each
+  predecessor computes the join's condition into `_mfN`. Carbon: 411 -> 392
+  fallback sites (rest are tail_jump_alias entries that start with a jcc);
+  NFSU2 has 1431, not yet regenerated with this.
+  Also fixed on the way: gap-prologue split of sub_001A7E00 ([STUB]
+  0x1A7E67, functions.py), cvtss2si/cvtsd2si lifted as truncation
+  (RECOMP_CVT_SI, rounds; 0x80000000 out of range).
+  Pad script: `lsl lsr lsu lsd` = left stick (steering in races).
+- Render scale works in menus (1280x480 AA surface) and races (640x480) on
+  Linux, GL thread too. Console settings must be `nfscx_env.txt`; boot logs
+  `[switch] env ...` per line or `no ... nfscx_env.txt`.
+- Linux test profile: the alias from switch_sd/.../UDATA copied into
+  /root/nfscx/game/UDATA. Pad: start at 45 s -> main menu (Career);
+  right x3 = Quick Race; times count from the first pad read.
 - Seeds (config/seed_functions.json): thread entries, thunks 0x30B870/75/7A,
   0x312D7B, 0x325469, 0x2F6BE6 (after a no-return call + int3), XPP 0x39B15C,
   0x39BD9A, ...

@@ -92,6 +92,100 @@ def _merge_zero_flag(states):
     return ("__zf_from_dest", [states[0][1][0]])
 
 
+def _first_flag_reads(bb):
+    """Conditions a block reads from the flags it inherits, as jcc names, or
+    None when something else reads them first (adc/sbb, lahf, ...)."""
+    from .lifter import _EFLAGS_PRESERVE, _JCC_CANON
+    reads = []
+    for insn in bb.instructions:
+        m = insn.mnemonic
+        if insn.is_cond_jump:
+            if m in ("jecxz", "jcxz", "loop", "loope", "loopne", "loopz", "loopnz"):
+                return None
+            reads.append(_JCC_CANON.get(m, m))
+            break
+        if m.startswith("set") and len(m) > 3:
+            reads.append(_JCC_CANON.get("j" + m[3:], "j" + m[3:]))
+            continue
+        if m.startswith("cmov"):
+            reads.append(_JCC_CANON.get("j" + m[4:], "j" + m[4:]))
+            continue
+        if m in _EFLAGS_PRESERVE and not insn.is_branch and not insn.is_call:
+            continue
+        break                               # a setter (or a call) ends it
+    return reads or None
+
+
+def _materialised_joins(blocks, preds, settled, start, bypasses):
+    """Joins whose predecessors set the flags differently.
+
+    _merge_flag_states gives up on them, and the consumer used to read the
+    `_flags` fallback -- assigned nowhere, so a je/jne there was a constant.
+    NFS Carbon's sub_002A87D0 (may this car smack a prop?) reaches its jne
+    from `test al, al` by jmp and from `inc al` by fall-through; it always
+    answered "no", and the car drove through every sign and cone.
+
+    Each predecessor already knows its own condition, so it computes it into
+    `_mfN` on the way out (before its jmp/jcc to the join, or at the end when
+    it falls through), and the join reads the variable. A predecessor that
+    cannot express a condition, or an edge that is neither, leaves the join
+    as it was.
+
+    Returns ({join: flag_state}, {pred: [(before_last, [stmt, ...])]}).
+    """
+    from .lifter import _make_condition
+    mat_in, mat_out = {}, {}
+    index = {bb.start: i for i, bb in enumerate(blocks)}
+    counter = 0
+    for bb in blocks:
+        join = bb.start
+        sources = preds.get(join, ())
+        if join == start or len(sources) < 2:
+            continue
+        if not all(p in settled and settled[p] and settled[p][0] for p in sources):
+            continue
+        if _merge_flag_states([settled[p] for p in sources]) is not None:
+            continue
+        reads = _first_flag_reads(bb)
+        if not reads:
+            continue
+        reads = list(dict.fromkeys(reads))
+        plan = []
+        for p in sorted(sources):
+            pb = blocks[index[p]]
+            last = pb.instructions[-1] if pb.instructions else None
+            if last is None or last.address in bypasses:
+                plan = None
+                break
+            jumps_here = last.jump_target == join and (
+                last.mnemonic == "jmp" or last.is_cond_jump)
+            falls_here = (index[p] + 1 < len(blocks)
+                          and blocks[index[p] + 1].start == join)
+            if not (jumps_here or falls_here):
+                plan = None
+                break
+            conds = []
+            for jcc in reads:
+                r = _make_condition(jcc, *settled[p])
+                if not r:
+                    plan = None
+                    break
+                conds.append(r[0])
+            if plan is None:
+                break
+            plan.append((p, jumps_here, conds))
+        if not plan:
+            continue
+        names = [f"_mf{counter + k}" for k in range(len(reads))]
+        counter += len(reads)
+        mat_in[join] = ("__materialized", tuple(zip(reads, names)))
+        for p, before_last, conds in plan:
+            assigns = [f"{n} = ({c}) ? 1 : 0; /* flags for loc_{join:08X} */"
+                       for n, c in zip(names, conds)]
+            mat_out.setdefault(p, []).append((before_last, assigns))
+    return mat_in, mat_out
+
+
 def _incoming_flag_state(sources, known, is_entry):
     """The flag state a block inherits, or None when it cannot be known.
 
@@ -2493,7 +2587,9 @@ class FunctionTranslator:
         # itself, which is what this function did before the probe existed.
         out_state = {}
         settled_state = out_state
-        if any(p >= bb.start for bb in blocks for p in preds[bb.start]):
+        mixed_join = any(
+            len(preds[bb.start]) > 1 for bb in blocks if bb.start != start)
+        if mixed_join or any(p >= bb.start for bb in blocks for p in preds[bb.start]):
             saved_unimplemented = {
                 k: list(v) for k, v in self.lifter.unimplemented.items()
             }
@@ -2514,6 +2610,18 @@ class FunctionTranslator:
             settled_state = out_state
             out_state = {}
 
+        mat_in, mat_out = _materialised_joins(
+            blocks, preds, settled_state, start, debug_slide_bypasses)
+        if mat_in:
+            names = sorted({v for st in mat_in.values() for _, v in st[1]})
+            at = next((k for k, l in enumerate(lines)
+                       if "int _flags = 0;" in l), None)
+            decl = f"    int {', '.join(n + ' = 0' for n in names)}; /* materialised flags */"
+            if at is None:
+                lines.append(decl)
+            else:
+                lines.insert(at + 1, decl)
+
         for bb in blocks:
             # Emit label if this block is a branch target
             if bb.start in label_addrs or bb.start == start:
@@ -2531,9 +2639,16 @@ class FunctionTranslator:
             # order.
             incoming = _incoming_flag_state(preds[bb.start], settled_state,
                                             bb.start == start)
+            if incoming is None and bb.start in mat_in:
+                incoming = mat_in[bb.start]
 
             stmts, out_state[bb.start] = lift_basic_block(
                 self.lifter, bb, flag_state=incoming)
+            for before_last, assigns in mat_out.get(bb.start, ()):
+                if before_last and stmts:
+                    stmts[-1:-1] = assigns
+                else:
+                    stmts.extend(assigns)
             for stmt in stmts:
                 lines.append(f"    {stmt}")
             bypass = debug_slide_bypasses.get(bb.last_insn.address)

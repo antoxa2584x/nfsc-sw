@@ -511,6 +511,13 @@ def _lahf_value(flag_setter, flag_ops):
     return "(uint8_t)(0x02 | " + " | ".join(bits) + ")"
 
 
+# Spellings of the same condition, to one name (materialised joins).
+_JCC_CANON = {"jz": "je", "jnz": "jne", "jc": "jb", "jnae": "jb", "jnc": "jae",
+              "jnb": "jae", "jna": "jbe", "jnbe": "ja", "jnge": "jl",
+              "jnl": "jge", "jng": "jle", "jnle": "jg", "jpe": "jp",
+              "jpo": "jnp"}
+
+
 def _make_condition(jcc, flag_setter, flag_ops):
     """
     Generate a C condition expression for a jcc based on what set the flags.
@@ -532,6 +539,15 @@ def _make_condition(jcc, flag_setter, flag_ops):
     # Only ZF is answerable from it. dec does not write CF, so a jb after the
     # same join would be reading a flag one predecessor never set; returning
     # None there leaves the existing fallback in place.
+    # A join whose predecessors set the flags with different instructions
+    # (`test al, al` reached by jmp, `inc al` by fall-through): each
+    # predecessor computed this condition into a variable before it left
+    # (translator.py, materialised joins). Only the conditions it was asked
+    # for exist.
+    if flag_setter == "__materialized":
+        var = dict(flag_ops).get(_JCC_CANON.get(jcc, jcc))
+        return (var, desc) if var else None
+
     if flag_setter == "__zf_from_dest" and flag_ops:
         dest = _fmt_operand_read(flag_ops[0])
         if jcc in ("je", "jz"):
@@ -3249,16 +3265,19 @@ class Lifter:
             if nops >= 2:
                 src = _fmt_operand_read(ops[1])
                 return [_sse_write(ops[0], f"(float)(int32_t){src}") + " /* cvtsi2ss */"]
-        if m in ("cvtss2si", "cvttss2si"):
+        if m in ("cvtss2si", "cvttss2si", "cvtsd2si", "cvttsd2si"):
+            # x86: cvt* rounds by MXCSR (nearest; titles leave it there),
+            # cvtt* truncates; NaN / out of range give 0x80000000. A C cast
+            # truncates both and is undefined out of range (AArch64
+            # saturates). recomp_types.h RECOMP_CVT_SI.
             if nops >= 2:
-                return [_fmt_operand_write(ops[0], f"(int32_t){_sse_read(ops[1])}") + f" /* {m} */"]
+                rnd = 0 if m.startswith("cvtt") else 1
+                return [_fmt_operand_write(ops[0], f"RECOMP_CVT_SI({_sse_read(ops[1])}, {rnd})")
+                        + f" /* {m} */"]
         if m == "cvtsi2sd":
             if nops >= 2:
                 src = _fmt_operand_read(ops[1])
                 return [_sse_write(ops[0], f"(double)(int32_t){src}") + " /* cvtsi2sd */"]
-        if m in ("cvtsd2si", "cvttsd2si"):
-            if nops >= 2:
-                return [_fmt_operand_write(ops[0], f"(int32_t){_sse_read(ops[1])}") + f" /* {m} */"]
         if m == "cvtss2sd":
             if nops >= 2:
                 return [_sse_write(ops[0], f"(double){_sse_read(ops[1])}") + " /* cvtss2sd */"]

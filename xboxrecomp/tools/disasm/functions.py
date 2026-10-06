@@ -206,7 +206,23 @@ class FunctionDetector:
             i = bisect.bisect_right(starts, addr) - 1
             return not (i >= 0 and addr < bounds[i][1])
 
+        # Conditional branches into the bytes just below them, by target.
+        # The gap test alone is not enough: a function found by this same
+        # pass (its parent) is not a function yet while its own tails are
+        # tested, so they are still in a gap. NFS Carbon's sub_001A7E00 has a
+        # ret mid-body and its `jne 0x1A7E56` / `je 0x1A7E5C` / `je 0x1A7E67`
+        # lead past it; 0x1A7E56 (`push esi`) became a function, the body was
+        # cut there, and the je to its `pop edi; ret` went to a stub -- the
+        # caller's edi never came back. A function is never entered by a jcc
+        # from the code above it.
+        jcc_from_above: Dict[int, List[int]] = {}
+        for i in self.engine.instructions.values():
+            if (i.is_cond_jump and i.jump_target is not None
+                    and 0 < i.jump_target - i.address < 0x1000):
+                jcc_from_above.setdefault(i.jump_target, []).append(i.address)
+
         added = False
+        found: List[int] = []
         for insn in list(self.engine.instructions.values()):
             if not insn.is_ret:
                 continue
@@ -233,6 +249,17 @@ class FunctionDetector:
             # half -- but those are covered, so they are not in a gap.
             if not (self.engine.probes_as_prologue(nxt)
                     or self.engine.probes_as_constant_stub(nxt)):
+                continue
+            found.append(nxt)
+
+        # A tail of the function above: branched to from a known body, or
+        # from one found here (the nearest of these below it is its parent).
+        found.sort()
+        for nxt in found:
+            k = bisect.bisect_left(found, nxt)
+            parent = found[k - 1] if k else None
+            if any(not in_a_gap(src) or (parent is not None and parent <= src)
+                   for src in jcc_from_above.get(nxt, ())):
                 continue
             self._add_candidate(nxt, config.CONFIDENCE_CC_BOUNDARY,
                                 "gap_prologue")

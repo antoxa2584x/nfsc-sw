@@ -299,11 +299,12 @@ static uint8_t synthetic_buttons(void)
  * Each step is  time_ms:buttons:hold_ms , times measured from the first
  * report the title reads (so boot-time variance does not shift the script).
  * Buttons, joined with '+': up down left right start back lthumb rthumb
- * (digital) and a b x y black white lt rt (analog, pressed fully).
+ * (digital), a b x y black white lt rt (analog, pressed fully) and lsl lsr
+ * lsu lsd (left stick fully left/right/up/down).
  * Up to 64 steps. RECOMP_PAD2_SCRIPT drives the second pad the same way
  * (and keeps it plugged in), with times from the first pad's first read. */
 #define PAD_SCRIPT_MAX 64
-typedef struct { unsigned at, hold; uint8_t digital; uint8_t analog; } PadStep;
+typedef struct { unsigned at, hold; uint8_t digital; uint8_t analog; uint8_t stick; } PadStep;
 static PadStep s_script_steps[USB_GAMEPADS][PAD_SCRIPT_MAX];
 static int s_script_count[USB_GAMEPADS] = { -1, -1 };
 static unsigned long s_script_t0;
@@ -312,13 +313,14 @@ static void pad_script_parse(int dev)
 {
     PadStep *steps = s_script_steps[dev];
     int n;
-    static const struct { const char *name; uint8_t digital, analog; } names[] = {
+    static const struct { const char *name; uint8_t digital, analog, stick; } names[] = {
         { "up", 0x01, 0 }, { "down", 0x02, 0 }, { "left", 0x04, 0 },
         { "right", 0x08, 0 }, { "start", 0x10, 0 }, { "back", 0x20, 0 },
         { "lthumb", 0x40, 0 }, { "rthumb", 0x80, 0 },
         { "a", 0, 0x01 }, { "b", 0, 0x02 }, { "x", 0, 0x04 }, { "y", 0, 0x08 },
         { "black", 0, 0x10 }, { "white", 0, 0x20 }, { "lt", 0, 0x40 },
         { "rt", 0, 0x80 },
+        { "lsl", 0, 0, 1 }, { "lsr", 0, 0, 2 }, { "lsu", 0, 0, 4 }, { "lsd", 0, 0, 8 },
     };
     const char *spec = getenv(dev ? "RECOMP_PAD2_SCRIPT" : "RECOMP_PAD_SCRIPT");
     const char *p = spec;
@@ -327,7 +329,7 @@ static void pad_script_parse(int dev)
     while (p && *p && n < PAD_SCRIPT_MAX) {
         char *end;
         unsigned at = (unsigned)strtoul(p, &end, 10);
-        uint8_t dig = 0, ana = 0;
+        uint8_t dig = 0, ana = 0, stk = 0;
 
         if (*end != ':')
             break;
@@ -340,6 +342,7 @@ static void pad_script_parse(int dev)
                         && strncmp(names[k].name, p, len) == 0) {
                     dig |= names[k].digital;
                     ana |= names[k].analog;
+                    stk |= names[k].stick;
                 }
             p += len;
             if (*p == '+')
@@ -351,6 +354,7 @@ static void pad_script_parse(int dev)
         steps[n].hold = (unsigned)strtoul(p + 1, &end, 10);
         steps[n].digital = dig;
         steps[n].analog = ana;
+        steps[n].stick = stk;
         n++;
         p = (*end == ',') ? end + 1 : NULL;
     }
@@ -361,8 +365,9 @@ static void pad_script_parse(int dev)
     s_script_count[dev] = n;
 }
 
-static void pad_script(int dev, uint8_t *digital, uint8_t *analog)
+static void pad_script(int dev, uint8_t *out)
 {
+    uint8_t *digital = &out[2], *analog = &out[4];
     const PadStep *steps = s_script_steps[dev];
     unsigned long now;
     int i;
@@ -391,6 +396,14 @@ static void pad_script(int dev, uint8_t *digital, uint8_t *analog)
             for (b = 0; b < 8; b++)
                 if (steps[i].analog & (1u << b))
                     analog[b] = 0xFF;
+            if (steps[i].stick & 3) {     /* LX, 16-bit LE at 12 */
+                int16_t v = (steps[i].stick & 1) ? -32767 : 32767;
+                out[12] = (uint8_t)(v & 0xFF); out[13] = (uint8_t)((uint16_t)v >> 8);
+            }
+            if (steps[i].stick & 12) {    /* LY at 14, up positive */
+                int16_t v = (steps[i].stick & 8) ? -32767 : 32767;
+                out[14] = (uint8_t)(v & 0xFF); out[15] = (uint8_t)((uint16_t)v >> 8);
+            }
         }
     }
 }
@@ -458,7 +471,7 @@ int usb_gamepad_report(int dev, uint8_t *out, int max)
 
     if (xbox_InputGetState((DWORD)dev, &state) != 0) {
         out[2] = synth;
-        pad_script(dev, &out[2], &out[4]);
+        pad_script(dev, out);
         return 20;
     }
 
@@ -475,7 +488,7 @@ int usb_gamepad_report(int dev, uint8_t *out, int max)
     out[17] = (uint8_t)((g->sThumbRX >> 8) & 0xFF);
     out[18] = (uint8_t)(g->sThumbRY & 0xFF);
     out[19] = (uint8_t)((g->sThumbRY >> 8) & 0xFF);
-    pad_script(dev, &out[2], &out[4]);
+    pad_script(dev, out);
     return 20;
 }
 

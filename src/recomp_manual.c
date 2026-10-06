@@ -117,15 +117,15 @@ void sub_0035A0C0(void)
             fprintf(stderr, "[D3D] GPU semaphore at 0x%08X\n", sem);
             registered = sem;
         }
-        if (0 /* NFSU2 main-loop return addresses */) {
-            /* The main loop (sub_000AEA90) calls BlockOnFence on the fence
-             * of the frame it just built, right before Present: the whole
-             * frame has to be through the GPU before the next one starts,
-             * so the game and the pushbuffer executor take turns instead
-             * of overlapping (Eden race: game waited ~50% of the time,
-             * executor ~20% idle). RECOMP_FRAME_LAG=1 waits for the
-             * previous frame's fence instead: one frame in flight, as on a
-             * PC. Race frames checked on Linux, no corruption. */
+        if (MEM32(esp) == 0x0035A6DCu && MEM32(esp + 12) == 0x0010B24Bu) {
+            /* Carbon's renderer (sub_00112B60) starts each frame with
+             * sub_0010B240: BlockOnFence on the fence the previous frame
+             * ended with ([0x45C254]), then Swap. Only after that does it
+             * build the next frame, so the game and the pushbuffer executor
+             * take turns (NFSU2's main loop did the same; Eden race: game
+             * waited ~50% of the time, executor ~20% idle).
+             * RECOMP_FRAME_LAG=1 waits for the fence of the frame before
+             * instead: two frames in flight. */
             static int lag = -1;
             static uint32_t prev;
             if (lag < 0) {
@@ -209,8 +209,12 @@ extern void sub_00362050_gen(void);
 void sub_00362050(void)
 {
     uint32_t blk = ecx;
-    uint32_t head = MEM32(blk + 0x1BC);
+    /* Read only once at DISPATCH: read before, a retire by the other
+     * handler (DPC thread vs a D3D busy-wait) in between was counted by
+     * both, the executor's flip index ran one off for good, and every
+     * FLIP_STALL then waited out its 250 ms (Carbon, console, 3.7 fps). */
     uint8_t old = d3d_isr_enter();
+    uint32_t head = MEM32(blk + 0x1BC);
 
     xbox_Nv2aVblankTaken();
     sub_00362050_gen();
@@ -239,8 +243,8 @@ void sub_003625C0(void)
 {
     volatile uint32_t *nv = (volatile uint32_t *)XBOX_PTR(0xFD000000u);
     uint32_t blk = ecx;
-    uint32_t head = MEM32(blk + 0x1BC);
     uint8_t old = d3d_isr_enter();
+    uint32_t head = MEM32(blk + 0x1BC);     /* at DISPATCH, as above */
     uint32_t nsource;
 
     nv2a_pb_trap_lock();
@@ -251,6 +255,580 @@ void sub_003625C0(void)
         nv2a_pb_trap_taken();
     nv2a_pb_trap_unlock();
     d3d_isr_leave(old);
+}
+
+/* ── Bounding box against the view frustum, sub_00103F50 ─────────────
+ *
+ * thiscall (this, const float min[3], const float max[3], matrix), ret 12.
+ * The box's centre c = (max + min) * K and half-size e = max - c (both
+ * stored as floats, as the original does), then for each of six planes
+ * (n, d) at [this] + 0x140 + 16k: r = |n|.e, dist = n.c + d; below K2 on
+ * dist + r means outside (return 0); below K2 on dist - r means the box
+ * straddles that plane. Returns 2 when inside all six, 1 when straddling.
+ * With a matrix the box is first transformed by it (sub_000FE4E0, below).
+ *
+ * NFSU2's copy (0x9A330, ported 2026-10-06) was the hottest function of its
+ * main thread in a race (~5% on the console): every object, every view,
+ * every frame. Carbon's sums its terms in another order (r: z, y, x; dist:
+ * z, x, y), kept here. Written in C it keeps
+ * everything in registers. The arithmetic is the lifted code's -- doubles,
+ * in the same order -- so results match it exactly; RECOMP_NATIVE_CHECK=1
+ * runs both and reports any difference. RECOMP_NATIVE=0 turns it off. */
+extern void sub_00103F50_gen(void);
+extern void sub_000FE4E0_gen(void);
+
+/* sub_000FE4E0: cdecl (matrix, float min[3], float max[3]) -- the box's
+ * corners transformed by a 4x4 row-major matrix, as a box again (Arvo): both
+ * start at the translation row, and for each row i and column j the larger
+ * of min[i]*M[i][j] and max[i]*M[i][j] goes to max[j], the smaller to min[j].
+ * As the original: the max product is rounded to float before the compare
+ * (it goes through memory), the sums are kept in extended (here double)
+ * precision and stored as floats at the end, and an unordered compare adds
+ * the min product to max. */
+static void box_transform(uint32_t m, float mn[3], float mx[3])
+{
+    double hi[3], lo[3];
+    int i, j;
+    for (j = 0; j < 3; j++)
+        hi[j] = lo[j] = (double)MEMF(m + 0x30u + 4u * j);
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < 3; j++) {
+            double mm = (double)MEMF(m + 16u * i + 4u * j);
+            double e = (double)mn[i] * mm;
+            double f = (double)(float)((double)mx[i] * mm);
+            if (e < f) { hi[j] += f; lo[j] += e; }
+            else       { hi[j] += e; lo[j] += f; }
+        }
+    for (j = 0; j < 3; j++) {
+        mn[j] = (float)lo[j];
+        mx[j] = (float)hi[j];
+    }
+}
+
+static uint32_t frustum_box_native(uint32_t self, uint32_t pmin, uint32_t pmax,
+                                   uint32_t matrix, uint32_t *out_ecx, uint32_t *out_edx)
+{
+    const double K = (double)MEMF(0x003A3C28u), K2 = (double)MEMF(0x003A3880u);
+    float mn[3] = { MEMF(pmin), MEMF(pmin + 4), MEMF(pmin + 8) };
+    float mx[3] = { MEMF(pmax), MEMF(pmax + 4), MEMF(pmax + 8) };
+    float ax, ay, az, bx, by, bz;
+    if (matrix)
+        box_transform(matrix, mn, mx);
+    ax = mn[0]; ay = mn[1]; az = mn[2];
+    bx = mx[0]; by = mx[1]; bz = mx[2];
+    float cx = (float)(((double)bx + (double)ax) * K);
+    float cy = (float)(((double)by + (double)ay) * K);
+    float cz = (float)(((double)bz + (double)az) * K);
+    float ex = (float)((double)bx - (double)cx);
+    float ey = (float)((double)by - (double)cy);
+    float ez = (float)((double)bz - (double)cz);
+    uint32_t planes = MEM32(self) + 0x144u, k;
+    int straddle = 0;
+
+    for (k = 0; k < 6; k++) {
+        uint32_t p = planes + 16u * k;
+        double nx = MEMF(p - 4), ny = MEMF(p), nz = MEMF(p + 4), d = MEMF(p + 8);
+        double r = (fabs(nz) * ez + fabs(ny) * ey) + fabs(nx) * ex;
+        double dist = ((cz * nz + cx * nx) + cy * ny) + d;
+        if (dist + r < K2) {
+            *out_ecx = p;
+            *out_edx = k + 1;
+            return 0;
+        }
+        if (dist - r < K2)
+            straddle = 1;
+    }
+    *out_ecx = planes + 96u;
+    *out_edx = 7;
+    return straddle ? 1u : 2u;
+}
+
+void sub_00103F50(void)
+{
+    static int mode = -1;               /* 0 lifted, 1 native, 2 native + check */
+    static unsigned long calls, with_matrix, mismatches;
+    uint32_t self = ecx, pmin = MEM32(esp + 4), pmax = MEM32(esp + 8);
+    uint32_t matrix = MEM32(esp + 12), r, rc, rd;
+
+    if (mode < 0) {
+        const char *e = getenv("RECOMP_NATIVE"), *c = getenv("RECOMP_NATIVE_CHECK");
+        mode = (e && *e == '0') ? 0 : (c && *c == '1') ? 2 : 1;
+    }
+    calls++;
+    with_matrix += matrix != 0;
+    if (mode == 0) {
+        sub_00103F50_gen();
+        return;
+    }
+    r = frustum_box_native(self, pmin, pmax, matrix, &rc, &rd);
+    if (mode == 2) {
+        sub_00103F50_gen();             /* pops its own arguments */
+        if (eax != r && mismatches++ < 20)
+            fprintf(stderr, "[native] sub_00103F50 mismatch: lifted %u native %u "
+                    "(box %08X-%08X this %08X)\n", eax, r, pmin, pmax, self);
+        if ((calls & 0xFFFFF) == 0)
+            fprintf(stderr, "[native] sub_00103F50: %lu calls, %lu with a matrix, "
+                    "%lu mismatches\n", calls, with_matrix, mismatches);
+        return;
+    }
+    eax = r;
+    ecx = rc;
+    edx = rd;
+    esp += 16;                          /* return address + three arguments */
+}
+
+/* sub_000FE4E0 on its own (it has other callers): box_transform on guest
+ * memory. Returns max (eax), as the original leaves it; cdecl. */
+void sub_000FE4E0(void)
+{
+    static int mode = -1;
+    uint32_t m = MEM32(esp + 4), pmin = MEM32(esp + 8), pmax = MEM32(esp + 12);
+    float mn[3], mx[3];
+    int j;
+
+    if (mode < 0) {
+        const char *e = getenv("RECOMP_NATIVE"), *c = getenv("RECOMP_NATIVE_CHECK");
+        mode = (e && *e == '0') ? 0 : (c && *c == '1') ? 2 : 1;
+    }
+    if (!mode) {
+        sub_000FE4E0_gen();
+        return;
+    }
+    for (j = 0; j < 3; j++) {
+        mn[j] = MEMF(pmin + 4u * j);
+        mx[j] = MEMF(pmax + 4u * j);
+    }
+    box_transform(m, mn, mx);
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        sub_000FE4E0_gen();             /* writes the guest's boxes itself */
+        calls++;
+        for (j = 0; j < 3; j++)
+            if (memcmp(&mn[j], (const void *)XBOX_PTR(pmin + 4u * j), 4)
+                || memcmp(&mx[j], (const void *)XBOX_PTR(pmax + 4u * j), 4)) {
+                if (bad++ < 20)
+                    fprintf(stderr, "[native] sub_000FE4E0 mismatch at %u: native %g %g,"
+                            " lifted %g %g\n", j, mn[j], mx[j],
+                            MEMF(pmin + 4u * j), MEMF(pmax + 4u * j));
+                break;
+            }
+        if ((calls & 0xFFFFF) == 0)
+            fprintf(stderr, "[native] sub_000FE4E0: %lu calls, %lu mismatches\n", calls, bad);
+        return;
+    }
+    for (j = 0; j < 3; j++) {
+        MEMF(pmin + 4u * j) = mn[j];
+        MEMF(pmax + 4u * j) = mx[j];
+    }
+    eax = pmax;
+    ecx = pmin + 12u;
+    edx = m + 8u + 48u;
+    esp += 4;                           /* cdecl: the caller pops the arguments */
+}
+
+/* ── 4x4 matrix multiply, sub_002EFCB4 ─────────────────────────
+ *
+ * stdcall (out, a, b), ret 12, eax = out: out = a * b, row-major floats, in
+ * SSE (shufps a[i][j] across the row, mulps by row j of b, addps). Every
+ * xmm register of the lifted body is thread-local, so each call was ~100
+ * TLS accesses (calls on Horizon). NFSU2's sub_000A2EA0 called it twice per object
+ * drawn; at a drag start line (Coastal Express, ~2300 draws a frame) it was
+ * 15-18% of the main thread on x86, native -22% main-thread time per frame.
+ * Same sums in the same order, ((p0 + p1) + p2) + p3, no FMA contraction;
+ * all rows are computed before the store, as out may alias a or b.
+ * RECOMP_NATIVE=0 lifted, RECOMP_NATIVE_CHECK=1 both and compare (Linux race:
+ * 0 mismatches in 4.4M calls). */
+extern void sub_002EFCB4_gen(void);
+
+__attribute__((optimize("fp-contract=off")))
+static void mat4_mul(float *o, const float *a, const float *b)
+{
+    float r[16];
+    int i, k;
+    for (i = 0; i < 4; i++)
+        for (k = 0; k < 4; k++) {
+            float s = a[4 * i] * b[k];
+            s = s + a[4 * i + 1] * b[4 + k];
+            s = s + a[4 * i + 2] * b[8 + k];
+            s = s + a[4 * i + 3] * b[12 + k];
+            r[4 * i + k] = s;
+        }
+    memcpy(o, r, sizeof r);
+}
+
+void sub_002EFCB4(void)
+{
+    static int mode = -1;               /* 0 lifted, 1 native, 2 native + check */
+    uint32_t out = MEM32(esp + 4), a = MEM32(esp + 8), b = MEM32(esp + 12);
+
+    if (mode < 0) {
+        const char *e = getenv("RECOMP_NATIVE"), *c = getenv("RECOMP_NATIVE_CHECK");
+        mode = (e && *e == '0') ? 0 : (c && *c == '1') ? 2 : 1;
+    }
+    if (mode == 0) {
+        sub_002EFCB4_gen();
+        return;
+    }
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        float o[16], ma[16], mb[16];
+        memcpy(ma, (const void *)XBOX_PTR(a), 64);
+        memcpy(mb, (const void *)XBOX_PTR(b), 64);
+        mat4_mul(o, ma, mb);
+        sub_002EFCB4_gen();             /* pops its own arguments */
+        calls++;
+        if (memcmp(o, (const void *)XBOX_PTR(out), 64) && bad++ < 20)
+            fprintf(stderr, "[native] sub_002EFCB4 mismatch: out %08X a %08X b %08X\n",
+                    out, a, b);
+        if ((calls & 0xFFFFF) == 0)
+            fprintf(stderr, "[native] sub_002EFCB4: %lu calls, %lu mismatches\n", calls, bad);
+        return;
+    }
+    mat4_mul((float *)XBOX_PTR(out), (const float *)XBOX_PTR(a), (const float *)XBOX_PTR(b));
+    eax = out;
+    esp += 16;                          /* return address + three arguments */
+}
+
+/* ── Float to integer, sub_0032C47C (_ftol2) ──────────────────
+ *
+ * MSVC's CRT _ftol2: st(0) truncated to a 64-bit integer in edx:eax, popped.
+ * Every (int)float cast in the title calls it (589 sites); the hottest
+ * function of the main thread in a Linux race (4.4%). It rounds with fistp
+ * (the control word's mode), then corrects towards zero by the sign of the
+ * float (x - r): x >= 0 and x - r < 0 -> r - 1; x < 0 (sign of (float)x)
+ * and x - r > 0 -> r + 1. r == 0 or the integer indefinite is returned as
+ * is. Exact, including ecx, the frame it publishes and the x87 top.
+ * RECOMP_NATIVE=0 lifted, RECOMP_NATIVE_CHECK=1 both and compare. */
+extern void sub_0032C47C_gen(void);
+
+__attribute__((noinline, cold)) static int64_t ftol_fist_slow(double x, uint16_t cw)
+{
+    return recomp_fist(x, cw, 64);
+}
+
+static inline int64_t ftol_fist(double x, uint16_t cw)
+{
+    if (__builtin_expect(((cw >> 10) & 3u) == 0 && fabs(x) < 0x1p63, 1))
+        return (int64_t)rint(x);        /* host rounding is never changed: nearest */
+    return ftol_fist_slow(x, cw);       /* other modes, NaN, out of range */
+}
+
+static inline void ftol2_native(double x, uint32_t *peax, uint32_t *pedx, uint32_t *pecx)
+{
+    int64_t r = ftol_fist(x, g_fp_control_word);
+    uint32_t lo = (uint32_t)r, hi = (uint32_t)((uint64_t)r >> 32), d;
+    float fx = (float)x, fd;
+    uint32_t sx;
+
+    if (lo == 0 && (hi & 0x7FFFFFFFu) == 0) {   /* 0 or the indefinite */
+        *peax = lo;
+        *pedx = hi;
+        return;
+    }
+    fd = (float)(x - (double)r);
+    memcpy(&d, &fd, 4);
+    memcpy(&sx, &fx, 4);
+    if (sx & 0x80000000u) {
+        d ^= 0x80000000u;
+        r += d >= 0x80000001u;          /* carry of d + 0x7FFFFFFF */
+    } else {
+        r -= d >= 0x80000001u;          /* borrow */
+    }
+    *peax = (uint32_t)r;
+    *pedx = (uint32_t)((uint64_t)r >> 32);
+    *pecx = d + 0x7FFFFFFFu;
+}
+
+/* Modes other than plain native, out of line so that the hot path below is
+ * small enough for LTO to inline into its 581 lifted callers. */
+static int s_ftol_mode = -1;            /* 0 lifted, 1 native, 2 native + check */
+
+__attribute__((noinline, cold)) static void ftol2_slow(void)
+{
+    double x = g_fp_stack[g_fp_top & 7];
+    uint32_t a, d, c = ecx, frame = esp - 4u;
+
+    if (s_ftol_mode < 0) {
+        const char *e = getenv("RECOMP_NATIVE"), *k = getenv("RECOMP_NATIVE_CHECK");
+        s_ftol_mode = (e && *e == '0') ? 0 : (k && *k == '1') ? 2 : 1;
+    }
+    if (s_ftol_mode == 0) {
+        sub_0032C47C_gen();
+        return;
+    }
+    ftol2_native(x, &a, &d, &c);
+    if (s_ftol_mode == 2) {
+        static unsigned long calls, bad;
+        int top = (g_fp_top + 1) & 7;
+        uint32_t sp = esp + 4u;
+        sub_0032C47C_gen();
+        calls++;
+        if ((eax != a || edx != d || ecx != c || g_fp_top != top || esp != sp
+             || g_ebp != frame) && bad++ < 20)
+            fprintf(stderr, "[native] sub_0032C47C mismatch for %.17g: lifted %08X:%08X "
+                    "ecx %08X, native %08X:%08X ecx %08X\n", x, edx, eax, ecx, d, a, c);
+        if ((calls & 0xFFFFFF) == 0)
+            fprintf(stderr, "[native] sub_0032C47C: %lu calls, %lu mismatches\n", calls, bad);
+        return;
+    }
+    eax = a;
+    edx = d;
+    ecx = c;
+    g_fp_top = (g_fp_top + 1) & 7;
+    g_ebp = g_seh_ebp = frame;
+    esp += 4;
+}
+
+inline void sub_0032C47C(void)
+{
+    uint32_t a, d, c, frame;
+    int top;
+
+    if (__builtin_expect(s_ftol_mode != 1, 0)) {
+        ftol2_slow();                   /* first call, lifted or check mode */
+        return;
+    }
+    top = g_fp_top;
+    c = ecx;
+    frame = esp - 4u;
+    ftol2_native(g_fp_stack[top & 7], &a, &d, &c);
+    eax = a;
+    edx = d;
+    ecx = c;
+    g_fp_top = (top + 1) & 7;
+    g_ebp = g_seh_ebp = frame;          /* as its push ebp / mov ebp, esp left them */
+    esp += 4;                           /* return address */
+}
+
+
+/* ── Small math leaves of the main thread ─────────────────────
+ *
+ * Each about 0.3-0.8% of the main thread in a Linux race, more on the
+ * console, where every x87 slot and register the lifted bodies touch is
+ * thread-local. Exact as the lifted code computes them (x87 values as
+ * doubles, rounded to float where the original stores), including the
+ * registers, flags and frame they leave behind. RECOMP_NATIVE=0 lifted,
+ * RECOMP_NATIVE_CHECK=1 both and compare. */
+static int native_mode(void)
+{
+    const char *e = getenv("RECOMP_NATIVE"), *c = getenv("RECOMP_NATIVE_CHECK");
+    return (e && *e == '0') ? 0 : (c && *c == '1') ? 2 : 1;
+}
+
+static void native_report(const char *name, unsigned long *calls, unsigned long *bad, int ok,
+                          uint32_t a0, uint32_t a1, uint32_t a2)
+{
+    ++*calls;
+    if (!ok && (*bad)++ < 20)
+        fprintf(stderr, "[native] %s mismatch: args %08X %08X %08X\n", name, a0, a1, a2);
+    if ((*calls & 0xFFFFF) == 0 || *calls == 4096)
+        fprintf(stderr, "[native] %s: %lu calls, %lu mismatches\n", name, *calls, *bad);
+}
+
+/* sub_0005D1F0: cdecl (out, m, v) -- out = v * m, m a row-major 4x4 with
+ * the translation in row 3; all three sums before the stores. */
+extern void sub_0005D1F0_gen(void);
+
+static void xform_point(uint32_t m, uint32_t v, float o[3])
+{
+    double v0 = MEMF(v), v1 = MEMF(v + 4), v2 = MEMF(v + 8);
+    o[0] = (float)(((MEMF(m + 0x20) * v2 + MEMF(m + 0x10) * v1) + MEMF(m + 0x00) * v0)
+                   + MEMF(m + 0x30));
+    o[1] = (float)(((MEMF(m + 0x24) * v2 + MEMF(m + 0x04) * v0) + MEMF(m + 0x14) * v1)
+                   + MEMF(m + 0x34));
+    o[2] = (float)(((MEMF(m + 0x28) * v2 + MEMF(m + 0x08) * v0) + MEMF(m + 0x18) * v1)
+                   + MEMF(m + 0x38));
+}
+
+void sub_0005D1F0(void)
+{
+    static int mode = -1;
+    uint32_t out = MEM32(esp + 4), m = MEM32(esp + 8), v = MEM32(esp + 12), e0 = esp;
+    float o[3];
+
+    if (mode < 0)
+        mode = native_mode();
+    if (mode == 0) {
+        sub_0005D1F0_gen();
+        return;
+    }
+    xform_point(m, v, o);
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        uint32_t sv_edx = edx;
+        int top = g_fp_top;
+        sub_0005D1F0_gen();
+        native_report("sub_0005D1F0", &calls, &bad,
+                      !memcmp(o, (const void *)XBOX_PTR(out), 12) && eax == out && ecx == v
+                      && edx == sv_edx && g_fp_top == top && esp == e0 + 4u
+                      && g_ebp == e0 - 4u && g_seh_ebp == e0 - 4u, out, m, v);
+        return;
+    }
+    memcpy((void *)XBOX_PTR(out), o, 12);
+    eax = out;
+    ecx = v;
+    g_ebp = g_seh_ebp = e0 - 4u;
+    esp += 4;
+}
+
+/* sub_00048B60: cdecl (dst, src) -- a 4x4 float matrix copied row by row
+ * (each row read before it is written; the middle two of each row through
+ * the x87, as doubles). Its argument slot src ends as src[15]'s bits. */
+extern void sub_00048B60_gen(void);
+
+void sub_00048B60(void)
+{
+    static int mode = -1;
+    uint32_t e0 = esp, dst = MEM32(esp + 4), src = MEM32(esp + 8), r;
+
+    if (mode < 0)
+        mode = native_mode();
+    if (mode == 0) {
+        sub_00048B60_gen();
+        return;
+    }
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        uint32_t want[16];
+        for (r = 0; r < 16; r++) {
+            volatile double f = MEMF(src + 4u * r);
+            float g = (float)f;
+            if ((r & 3) == 1 || (r & 3) == 2)
+                memcpy(&want[r], &g, 4);
+            else
+                want[r] = MEM32(src + 4u * r);
+        }
+        sub_00048B60_gen();
+        native_report("sub_00048B60", &calls, &bad,
+                      !memcmp(want, (const void *)XBOX_PTR(dst), 64) && eax == dst
+                      && ecx == want[12] && edx == want[15] && MEM32(e0 + 8u) == want[15]
+                      && esp == e0 + 4u && g_ebp == e0 - 4u && g_seh_ebp == e0 - 4u,
+                      dst, src, 0);
+        return;
+    }
+    for (r = 0; r < 64; r += 16) {
+        uint32_t w0 = MEM32(src + r), w3 = MEM32(src + r + 12);
+        volatile double f1 = MEMF(src + r + 4), f2 = MEMF(src + r + 8);
+        MEMF(dst + r + 4) = (float)f1;
+        MEM32(dst + r) = w0;
+        MEMF(dst + r + 8) = (float)f2;
+        MEM32(dst + r + 12) = w3;
+    }
+    MEM32(e0 + 8u) = MEM32(src + 0x3C);
+    eax = dst;
+    ecx = MEM32(src + 0x30);
+    edx = MEM32(src + 0x3C);
+    g_ebp = g_seh_ebp = e0 - 4u;
+    esp += 4;
+}
+
+/* x87 compare as the lifted code records it; with sw, also fnstsw ax. */
+static inline uint16_t fcmp_rec(double a, double b, int top, int sw)
+{
+    g_fp_cmp = RECOMP_FCMP(a, b);
+    g_fp_cc = RECOMP_FCMP_CC(g_fp_cmp);
+    if (sw)
+        eax = (eax & 0xFFFF0000u) | (uint16_t)(((top & 7u) << 11) | g_fp_cc);
+    return g_fp_cc;
+}
+
+/* sub_0005DC70: cdecl (const float p[2], const float s[2], const float q[2],
+ * float m) -> 1 when q lies within [p - m, p + s + m] on both axes. */
+extern void sub_0005DC70_gen(void);
+
+void sub_0005DC70(void)
+{
+    static int mode = -1;
+    uint32_t e0 = esp, p = MEM32(esp + 4), s = MEM32(esp + 8), q = MEM32(esp + 12);
+    uint32_t sv_eax = eax, sv_edx = edx, res = 0, a, d = edx;
+    double m = MEMF(esp + 16);
+    int top = g_fp_top, k, cmp;
+    uint16_t cc;
+
+    if (mode < 0)
+        mode = native_mode();
+    if (mode == 0) {
+        sub_0005DC70_gen();
+        return;
+    }
+    for (k = 0; k < 2; k++) {
+        if (!(fcmp_rec((double)MEMF(p + 4u * k) - m, MEMF(q + 4u * k), top, 1) & 0x4100u))
+            break;
+        d = s;
+        if ((fcmp_rec(m + MEMF(s + 4u * k), MEMF(q + 4u * k), top, 1) & 0x4500u) == 0x0100u)
+            break;
+    }
+    res = k == 2;
+    a = res; cmp = g_fp_cmp; cc = g_fp_cc;
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        eax = sv_eax;
+        edx = sv_edx;
+        sub_0005DC70_gen();
+        native_report("sub_0005DC70", &calls, &bad,
+                      eax == a && ecx == q && edx == d && g_fp_cmp == cmp && g_fp_cc == cc
+                      && g_fp_top == top && esp == e0 + 4u
+                      && g_ebp == e0 - 4u && g_seh_ebp == e0 - 4u, p, s, q);
+        return;
+    }
+    eax = res;
+    ecx = q;
+    edx = d;
+    g_ebp = g_seh_ebp = e0 - 4u;
+    esp += 4;
+}
+
+/* sub_0035EE20: D3D's SSE 4x4 multiply, stdcall (out, a, b), ret 12 --
+ * the same sums as sub_002EFCB4 (mat4_mul). Leaves the result rows in
+ * xmm2..xmm5 and a[3][2] * b row 2 / a[3][3] * b row 3 in xmm0 / xmm1;
+ * eax = a, ecx = out. */
+extern void sub_0035EE20_gen(void);
+
+__attribute__((optimize("fp-contract=off")))
+static void d3d_mat_mul(uint32_t out, uint32_t a, uint32_t b, RecompXmm x[6])
+{
+    float ma[16], mb[16], o[16];
+    int k;
+    memcpy(ma, (const void *)XBOX_PTR(a), 64);
+    memcpy(mb, (const void *)XBOX_PTR(b), 64);
+    mat4_mul(o, ma, mb);
+    for (k = 0; k < 4; k++) {
+        x[0].f[k] = ma[14] * mb[8 + k];
+        x[1].f[k] = ma[15] * mb[12 + k];
+    }
+    memcpy(&x[2], o, 64);
+}
+
+void sub_0035EE20(void)
+{
+    static int mode = -1;
+    uint32_t e0 = esp, out = MEM32(esp + 4), a = MEM32(esp + 8), b = MEM32(esp + 12);
+    RecompXmm x[6];
+
+    if (mode < 0)
+        mode = native_mode();
+    if (mode == 0) {
+        sub_0035EE20_gen();
+        return;
+    }
+    d3d_mat_mul(out, a, b, x);
+    if (mode == 2) {
+        static unsigned long calls, bad;
+        sub_0035EE20_gen();
+        native_report("sub_0035EE20", &calls, &bad,
+                      !memcmp(&x[2], (const void *)XBOX_PTR(out), 64) && eax == a && ecx == out
+                      && !memcmp(&x[0], &g_xmm0, 16) && !memcmp(&x[1], &g_xmm1, 16)
+                      && !memcmp(&x[2], &g_xmm2, 16) && !memcmp(&x[3], &g_xmm3, 16)
+                      && !memcmp(&x[4], &g_xmm4, 16) && !memcmp(&x[5], &g_xmm5, 16)
+                      && esp == e0 + 16u, out, a, b);
+        return;
+    }
+    memcpy((void *)XBOX_PTR(out), &x[2], 64);
+    g_xmm0 = x[0]; g_xmm1 = x[1]; g_xmm2 = x[2];
+    g_xmm3 = x[3]; g_xmm4 = x[4]; g_xmm5 = x[5];
+    eax = a;
+    ecx = out;
+    esp += 16;                          /* return address + three arguments */
 }
 
 /* ── DirectSound DSP command post (0x0039406B) ───────────────

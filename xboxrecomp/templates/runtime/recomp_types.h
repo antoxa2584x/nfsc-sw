@@ -521,6 +521,21 @@ void     xbox_mmio_write(uint32_t va, uint32_t val, unsigned size);
 #define DEV_MEMD(addr)   MEMD(XBOX_DEV_FOLD(addr))
 #define DEV_SMEM64(addr) SMEM64(XBOX_DEV_FOLD(addr))
 
+/* SSE float -> int32 (cvtss2si / cvtsd2si and the truncating cvtt*):
+ * round to nearest (the MXCSR default) or toward zero; NaN and values
+ * outside int32 give the integer indefinite 0x80000000, as on x86. */
+static inline int32_t recomp_cvt_si(double x, int round_nearest)
+{
+    if (round_nearest)
+        x = __builtin_rint(x);
+    else
+        x = __builtin_trunc(x);
+    if (!(x >= -2147483648.0 && x <= 2147483647.0))
+        return (int32_t)0x80000000u;
+    return (int32_t)x;
+}
+#define RECOMP_CVT_SI(v, rnd) recomp_cvt_si((double)(v), (rnd))
+
 #define MMIO_RD8(addr)  (XBOX_IS_MMIO(addr) ? (uint8_t)xbox_mmio_read((uint32_t)(addr), 1) : MEM8(XBOX_DEV_FOLD(addr)))
 #define MMIO_RD16(addr) (XBOX_IS_MMIO(addr) ? (uint16_t)xbox_mmio_read((uint32_t)(addr), 2) : MEM16(XBOX_DEV_FOLD(addr)))
 #define MMIO_RD32(addr) (XBOX_IS_MMIO(addr) ? xbox_mmio_read((uint32_t)(addr), 4) : MEM32(XBOX_DEV_FOLD(addr)))
