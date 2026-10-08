@@ -98,5 +98,21 @@
  {
   "start": "0x0039C5C9",
   "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00262570",
+  "note": "Gameplay event handler, registered by `mov eax, 0x262570` (0x2682CD); the range of sub_00262180 swallowed it. ICALL failed at runtime."
+ },
+ {
+  "start": "0x00265B50",
+  "note": "Gameplay event handler (aligned ebx frame), registered by `push 0x265B50` (0x267448); sits in a gap."
+ },
+ {
+  "start": "0x000754B0",
+  "note": "Virtual method (aligned ebx frame) in the vtable slot at 0x3A8330; sits in a gap."
+ },
+ {
+  "start": "0x001A9E70",
+  "note": "Script native PrecalculateDriftOpponentScores (tail-jumps to 0x1EA9B0); also found by the imm-ref pass now."
  }
 ]

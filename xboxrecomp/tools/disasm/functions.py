@@ -669,8 +669,19 @@ class FunctionDetector:
             # dispatches through the vtable and is gone. Those are taken by
             # address and passed around as values, so an immediate is exactly
             # how they show up.
+            # ...or a short body that tail-jumps into a known function. NFS
+            # Carbon's script native PrecalculateDriftOpponentScores
+            # (0x1A9E70) is `mov ecx, [mgr]; call get; mov ecx, eax; jmp
+            # method`: registered by `push 0x1A9E70` and never called by
+            # name. Refused, the script's call failed to resolve and drift
+            # opponents never scored. Landing on a function start is the
+            # evidence a data-shaped stream cannot fake.
+            tail = self.engine.block_tail_jump(target, max_insns=32)
+            tail_call = tail is not None and (
+                tail in self.functions or tail in self._candidates)
             if not (self.engine.probes_as_returning_body(target)
-                    or self.engine.probes_as_vcall_thunk(target)):
+                    or self.engine.probes_as_vcall_thunk(target)
+                    or tail_call):
                 continue
             if target not in self.engine.instructions:
                 if not self.engine.decode_at(target):
@@ -974,14 +985,38 @@ class FunctionDetector:
         shared tail, which costs a little code size and makes the entry point
         callable. The alternative -- a stub that returns immediately -- silently
         skips the epilogue and leaks the caller's frame.
+
+        An alias in a gap has no enclosing body; its end was "the next known
+        function start", measured before the other aliases existed. A run of
+        gap aliases -- DOA3's C++ dynamic initialisers -- then each spanned the
+        whole run, ~100 KB lifted 25 times, and one alias ran past its section
+        end into data. Measure each one as its own body, then run on to the
+        next function or alias start past that, within its section. Measuring
+        alone stops short at an inline jump table it does not recognise (the
+        CRT's backward memmove); cutting at the very next alias start splits a
+        real gap function at a data-table hit inside it, turning its own
+        branches into calls to stubs.
         """
+        bodies = sorted((f.start, f.end) for f in self.functions.values())
+        body_starts = [b[0] for b in bodies]
+        starts = sorted(set(body_starts) | set(self._alias_entries))
         for addr, end in sorted(self._alias_entries.items()):
             if addr in self.functions:
                 continue
+            section = self.image.get_section_at_va(addr)
+            i = bisect.bisect_right(body_starts, addr) - 1
+            if not (i >= 0 and addr < bodies[i][1]) and section is not None:
+                # Only the backed bytes are code; a virtual tail past them
+                # is zero-filled, and reading on reaches the next section.
+                end = min(end, section.virtual_addr
+                          + min(section.virtual_size, section.raw_size))
+                body_end = self._find_function_end(addr, end, end)
+                k = bisect.bisect_left(starts, max(body_end, addr + 1))
+                if k < len(starts):
+                    end = min(end, starts[k])
             insns = self.engine.get_instructions_in_range(addr, end)
             if not insns:
                 continue
-            section = self.image.get_section_at_va(addr)
             sec_name = section.name if section else ""
             label = self.labels.get(addr)
             name = label.name if label else f"sub_{addr:08X}"

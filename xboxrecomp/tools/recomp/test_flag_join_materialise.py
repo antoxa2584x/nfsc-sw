@@ -28,3 +28,15 @@ def test_inc_and_test_join_for_jne():
     assert 'if (_flags /* jne' not in code, code
     assert '_mf0' in code, code
     assert code.count('/* flags for loc_') == 2, code
+
+
+def test_zf_only_merge_still_materialises_jns():
+    # 0: test al,al; je 9; 4: sub edx,0x10; jmp 12; 9: sub edx,8;
+    # 12: jns 17; xor eax,eax; ret; 17: mov al,1; ret
+    # Both predecessors write edx, so the merge keeps "ZF from edx" -- which
+    # answers je/jne, not jns. NFS Carbon's HUFF bit reader (sub_001DCFA0,
+    # 0x1DD164) lifted that jns as never taken.
+    code = translate(bytes.fromhex('84c0740583ea10eb0383ea08790331c0c3b001c3'))
+    assert 'if (_flags /* jns' not in code, code
+    assert '_mf0' in code, code
+    assert code.count('/* flags for loc_') == 2, code

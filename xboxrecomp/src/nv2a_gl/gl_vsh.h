@@ -12,6 +12,9 @@ int nv2a_gl_vsh_program(const uint32_t (*prog)[4], uint32_t slots,
 
 /* Nonzero: emit Vulkan GLSL (nv2a_vk). Set once, before the first shader. */
 extern int nv2a_shader_vk;
+/* Nonzero (Vulkan): the device clamps depth per fragment (depthClamp), so
+ * the vertex shader leaves clip z unclamped. Set before the first shader. */
+extern int nv2a_shader_depth_clamp;
 
 /* Declarations and helpers every vertex shader starts with. */
 const char *nv2a_gl_vsh_prelude(void);

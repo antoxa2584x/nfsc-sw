@@ -17,6 +17,9 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   `sdmc:/switch/nfscx/`.
 - Linux test hygiene as NFSU2: one run at a time, kill by PID.
 - Under gdb use `set disable-randomization off`.
+- **Renderer work targets Vulkan only** (nv2a_vk; what the console runs).
+  Fix and verify render bugs in `build-vk-linux` (lavapipe, headless); the
+  GL backend is kept building but not fixed (Eden only).
 
 ## Layout and builds
 
@@ -25,6 +28,8 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
 | `/root/nfscx/` (WSL) | `game/` extracted disc (NFS/ZZDATA*.BIN), `gen/` lifted C, `build-linux/`, `build-abi/` (`-DRECOMP_ABI_CHECK`), `build-switch*/`, `run/` |
 | `/root/nfscx/iter.sh` | one bring-up iteration: regen, stub tracing, build, run `SECS` (pad script `PAD=`), seed from the log |
 | `/root/nfscx/snap.sh` | run `SECS`, print the APU reset counter and thread stacks (`THREADS=all`) |
+| `/root/nfscx/build-vk-linux/` | Linux Vulkan build (`-DNFSU2_VULKAN=ON`), runs on lavapipe with `RECOMP_VK_HEADLESS=1` |
+| `/root/nfscx/menu.sh` | start (`BIN=` build), pad to the main menu, leave running (pid in `run/pid`), dumps to `run/d/` |
 | `/root/nfscx/stubtrace.py` | makes every unresolved stub log its first hit (`[STUB]`) |
 | `xboxrecomp/` | vendored toolkit = nfsu1-xbox's + the kernel fixes below |
 | `src/recomp_manual.c` | library overrides remapped from NFSU2 + Carbon's DSOUND watchdog skip |
@@ -117,6 +122,64 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   0x1A7E67, functions.py), cvtss2si/cvtsd2si lifted as truncation
   (RECOMP_CVT_SI, rounds; 0x80000000 out of range).
   Pad script: `lsl lsr lsu lsd` = left stick (steering in races).
+- **Drift opponents scored 0 (fixed, 2026-10-08):** the race script calls
+  native PrecalculateDriftOpponentScores (0x1A9E70: `mov ecx,[0x46AE64];
+  call; mov ecx,eax; jmp 0x1EA9B0`), registered by `push` in 0x1C001C and
+  never called by name. No ret, so the imm-ref pass refused it and the run
+  logged `[ICALL] Failed to resolve VA 0x001A9E70`; the per-opponent
+  section table (+0x98, handed out by DriftSectionExited 0x1EC110) stayed
+  empty. Toolkit fix: imm-ref targets in a gap that tail-jump to a known
+  function are functions (functions.py, test_imm_ref_boundaries.py; also
+  picks up ~1600 C++ EH funclets). Seeds for other callbacks: 0x262570
+  (event handler swallowed by sub_00262180, also failed at runtime),
+  0x265B50, 0x754B0. Still missing: vtable method 0x157750 (slot 0x3B218C,
+  after a jump table; the seed guard rejects it). **Always grep run.log
+  for `ICALL] Failed`** -- it named this bug outright.
+  Drift map: race type 11 (`[[0x46AE5C]+0xE84]` -> +4 -> byte +0x2B),
+  racer i = `[0x46AE5C]+0x20+i*0x390`, score +0x144; script natives table
+  0x1C001C (191 names); stats query `0x456830`, provider = key/1000.
+- **HUFF decompressor jns (fixed):** sub_001DCFA0 (EA HUFF, dispatcher
+  0x1DF930 RAWW/HUFF/COMP/JDLZ) reaches `jns` at 0x1DD164 from two
+  `sub edx,N`; the join merged to "ZF from edx", which cannot answer jns,
+  so it lifted as never taken. translator.py now materialises such joins
+  (test_flag_join_materialise.py).
+- **EA logo movie cycled 3 frames (fixed, 2026-10-08):** the movie is a
+  ring of three 512x256 linear A8R8G8B8 textures (pitch 2048). The GL/VK
+  texture cache's sampled hash steps bytes/256 = one row, so every sample
+  sat in column 0 (black) and the frames were never re-uploaded. Linear
+  (pitch != 0) textures now hash every byte (bytes_hash_full, both
+  backends). nfsu2-xbox/nfsu1-xbox have the same sampler.
+- **Car reflections = cube maps (ported from NFSU2 f0b3f1e, 2026-10-08,
+  Vulkan only):** texture mode 3 as 6-layer cube images, dynamic cubes
+  assembled from the six face surfaces (`cube_from_surfaces`), samplerCube in
+  gl_psh.c for VK only. `RECOMP_VK_CUBE=0` turns it off. Lavapipe menu: hood and
+  windshield reflect (black before); races and hardware not checked yet.
+
+- **Main-menu car reflection drawn as a solid upside-down car (fixed in VK,
+  2026-10-08):** the menu draws the mirrored car first (same vertex program
+  as the car, c96-99 mirrored WVP, depth writes on), then the scene, then a
+  translucent floor (alpha blend, z test, no z write) that should leave only
+  a faint reflection. The floor is a few huge triangles with vertices near
+  or behind the eye, and the VK vertex shader clamped clip z to [0, w] per
+  vertex: that bends the depth plane (floor at 0.825 where it is really
+  0.757), the mirrored car (0.790) won the depth test and the floor never
+  covered it. With `depthClamp` the shader now leaves z unclamped
+  (`nv2a_shader_depth_clamp`, gl_vsh.c `s_vk_clip_free`); the rasteriser
+  clamps per fragment, as the NV2A does. Without depthClamp the old clamp
+  stays. GL has the same per-vertex clamp (`clamp(z, -|w|, |w|)`), not
+  changed. Not a game-code bug: the car itself is the reflection's model
+  scaled 0.928 about the camera (FE trick), the mirror plane is right.
+  Debug recipe that found it: per-draw log of one frame (blend/z/stencil,
+  textures, vp_start), skip draw ranges and compare dumps, read colour+depth
+  at one pixel after each draw, then project the logged constants by hand.
+- **Won car not in garage: not reproduced** (needs a career save at a boss
+  reward). Ask for a log: an `ICALL] Failed` line would name it.
+- Linux driving: `RECOMP_PAD_LIVE=<file>` (usb_gamepad.c) appends steps
+  while running (`buttons:ms` queued, `&buttons:ms` concurrent, `clear`);
+  /root/nfscx/live.sh starts a run with it, last.py shows the newest dump.
+  In drift races hold RT as pulses (`rt:1200` lines): a press held from
+  before the countdown is ignored. "TOO SLOW!" = player drift object
+  (`[[0x46AE64]+0x44]`) state 2 after its +0x38 timer runs out.
 - Render scale works in menus (1280x480 AA surface) and races (640x480) on
   Linux, GL thread too. Console settings must be `nfscx_env.txt`; boot logs
   `[switch] env ...` per line or `no ... nfscx_env.txt`.

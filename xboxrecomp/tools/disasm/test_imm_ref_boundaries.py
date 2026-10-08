@@ -50,3 +50,21 @@ def test_d3d_pushbuffer_word_is_not_a_function():
     sec.name = "D3D"
     det._pass_imm_ref_targets([sec])
     assert target not in det._candidates
+
+def _tail_body(jump_to_offset):
+    # mov ecx,[BASE+0x100]; jmp <BASE+jump_to_offset>, placed at offset 10.
+    rel = jump_to_offset - (10 + 6 + 5)
+    return bytes.fromhex('8b0d') + struct.pack('<I', BASE + 0x100) + b'\xe9' + struct.pack('<i', rel)
+
+def test_tail_jump_into_a_known_function_is_a_function():
+    # NFS Carbon's script native PrecalculateDriftOpponentScores (0x1A9E70):
+    # taken by `push`, no ret, ends in a jmp to the real method.
+    det, sec, target = detector(_tail_body(0), 10)
+    det._add_candidate(BASE, 0.9, "test")
+    det._pass_imm_ref_targets([sec])
+    assert target in det._candidates
+
+def test_tail_jump_to_nowhere_known_is_not_a_function():
+    det, sec, target = detector(_tail_body(7), 10)
+    det._pass_imm_ref_targets([sec])
+    assert target not in det._candidates

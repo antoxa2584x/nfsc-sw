@@ -424,6 +424,30 @@ static uint32_t bytes_hash(uint32_t va, uint32_t bytes)
     return (h ^ i) * 16777619u;
 }
 
+/* Every byte, for linear images. A sampled hash steps bytes/256, which for a
+ * power-of-two pitch is a whole number of rows: every sample lands in the same
+ * column. Carbon's EA logo movie (512x256 A8R8G8B8, pitch 2048, a ring of
+ * three) is black down that column, so its frames were never re-uploaded and
+ * the logo cycled through the first three. Linear images are few (movies,
+ * CPU-written pictures), so reading all of them once a frame is cheap. */
+static uint32_t bytes_hash_full(uint32_t va, uint32_t bytes)
+{
+    const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset() + va;
+    uint64_t a = 14695981039346656037ull ^ bytes, b = 1099511628211ull, x, y;
+    uint32_t i;
+
+    for (i = 0; i + 16 <= bytes; i += 16) {
+        memcpy(&x, mem + i, 8);
+        memcpy(&y, mem + i + 8, 8);
+        a = (a ^ x) * 1099511628211ull;
+        b = (b ^ y) * 1099511628211ull;
+    }
+    for (; i < bytes; i++)
+        a = (a ^ mem[i]) * 1099511628211ull;
+    a ^= b * 31u;
+    return (uint32_t)(a ^ (a >> 32));
+}
+
 static uint32_t tex_bytes(uint32_t color, uint32_t w, uint32_t h, uint32_t pitch)
 {
     if (color == 0x0C) return ((w + 3) / 4) * ((h + 3) / 4) * 8;
@@ -540,7 +564,8 @@ static GLuint tex_get(uint32_t va, uint32_t color, uint32_t w, uint32_t h,
         t->used = s_frame;
         return t->tex;
     }
-    hash = bytes_hash(va, tex_bytes(color, w, h, pitch));
+    hash = pitch ? bytes_hash_full(va, tex_bytes(color, w, h, pitch))
+                 : bytes_hash(va, tex_bytes(color, w, h, pitch));
     if (color == 0x0B)                       /* the palette is content too */
         hash ^= bytes_hash(s_palette_va, 1024) * 31u;
     if (t && t->hash == hash) {

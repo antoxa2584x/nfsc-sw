@@ -124,7 +124,7 @@ if(NINTENDO_SWITCH)
     set(NFSU2_SWITCH_APP_NAME "NFS Carbon (Xbox recomp)" CACHE STRING
         "Title shown in the homebrew menu")
     set(NFSU2_SWITCH_AUTHOR "nfsu2-xbox" CACHE STRING "Author shown in the homebrew menu")
-    set(NFSU2_SWITCH_VERSION "0.1" CACHE STRING "Version shown in the homebrew menu")
+    set(NFSU2_SWITCH_VERSION "0.2" CACHE STRING "Version shown in the homebrew menu")
     set(NFSU2_SWITCH_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg" CACHE FILEPATH
         "256x256 JPEG icon (libnx default when empty)")
 

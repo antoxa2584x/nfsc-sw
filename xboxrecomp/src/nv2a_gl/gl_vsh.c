@@ -23,6 +23,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct {
@@ -304,24 +305,51 @@ static const char s_vk_prelude[] =
     "    float lx = max(s.x, 0.0), ly = max(s.y, 0.0), w = clamp(s.w, -127.996, 127.996);\n"
     "    return vec4(1.0, lx, (lx > 0.0 && ly > 0.0) ? exp2(w * log2(ly)) : 0.0, 1.0);\n"
     "}\n"
-    /* z clamped only in front of the eye (w > 0). Behind it (w < 0) the
-     * vertex is clipped by x/y anyway and its true z is about w: clamping it
-     * to 0 skewed the interpolated depth of triangles crossing the eye plane
-     * (walls in hood view turned transparent, objects showed through them). */
-    NV2A_SNAP_GLSL
+    NV2A_SNAP_GLSL;
+
+/* Vulkan clip depth. Without depthClamp: z clamped only in front of the eye
+ * (w > 0). Behind it (w < 0) the vertex is clipped by x/y anyway and its true
+ * z is about w: clamping it to 0 skewed the interpolated depth of triangles
+ * crossing the eye plane (walls in hood view turned transparent, objects
+ * showed through them). */
+static const char s_vk_clip_clamp[] =
     "vec4 nv2a_clip(vec3 sw, float w) {\n"
     "    float z = sw.z * u_surf.z;\n"
     "    sw.xy = nv2a_snap(sw.xy, w);\n"
     "    return vec4(sw.x * u_surf.x - w, sw.y * u_surf.y - w,\n"
     "                w > 0.0 ? clamp(z, 0.0, w) : z, w);\n"
     "}\n";
+/* With depthClamp the rasteriser clamps each fragment's depth, as the NV2A
+ * does, and z stays linear in clip space. Any clamp per vertex bends the
+ * depth plane of a triangle with a vertex near or behind the eye: Carbon's
+ * front-end floor (a few huge triangles) came out deeper than the mirrored
+ * car under it, and the translucent floor depth-failed over the
+ * reflection, which then showed as a solid upside-down car. */
+static const char s_vk_clip_free[] =
+    "vec4 nv2a_clip(vec3 sw, float w) {\n"
+    "    sw.xy = nv2a_snap(sw.xy, w);\n"
+    "    return vec4(sw.x * u_surf.x - w, sw.y * u_surf.y - w, sw.z * u_surf.z, w);\n"
+    "}\n";
 
 int nv2a_shader_vk;
+int nv2a_shader_depth_clamp;
 
 const char *nv2a_gl_vsh_prelude(void)
 {
-    if (nv2a_shader_vk)
-        return s_vk_prelude;
+    if (nv2a_shader_vk) {
+        static char *pre[2];
+        int dc = nv2a_shader_depth_clamp != 0;
+        if (!pre[dc]) {
+            const char *clip = dc ? s_vk_clip_free : s_vk_clip_clamp;
+            size_t a = sizeof s_vk_prelude - 1, c = strlen(clip);
+            pre[dc] = (char *)malloc(a + c + 1);
+            if (!pre[dc])
+                return s_vk_prelude;
+            memcpy(pre[dc], s_vk_prelude, a);
+            memcpy(pre[dc] + a, clip, c + 1);
+        }
+        return pre[dc];
+    }
     return
         "#version 330 core\n"
         "layout(location = 0) in vec4 v0;\n"
