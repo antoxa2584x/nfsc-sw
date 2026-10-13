@@ -124,7 +124,13 @@ if(NINTENDO_SWITCH)
     set(NFSU2_SWITCH_APP_NAME "NFS Carbon (Xbox recomp)" CACHE STRING
         "Title shown in the homebrew menu")
     set(NFSU2_SWITCH_AUTHOR "nfsu2-xbox" CACHE STRING "Author shown in the homebrew menu")
-    set(NFSU2_SWITCH_VERSION "0.2" CACHE STRING "Version shown in the homebrew menu")
+    # The release lives here, not in the cache: a cached default stays at
+    # whatever the build directory was first configured with.
+    # -DNFSU2_SWITCH_VERSION_OVERRIDE=x sets another one.
+    set(NFSU2_SWITCH_VERSION "0.2.1")
+    if(NFSU2_SWITCH_VERSION_OVERRIDE)
+        set(NFSU2_SWITCH_VERSION "${NFSU2_SWITCH_VERSION_OVERRIDE}")
+    endif()
     set(NFSU2_SWITCH_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg" CACHE FILEPATH
         "256x256 JPEG icon (libnx default when empty)")
 
