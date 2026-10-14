@@ -196,6 +196,24 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   rewrites it to 1 in TRAPPED_DATA. `NFSU2_FPS_CAP=30` keeps the title's.
   Log `[fps] flip interval 2 -> 1 vblank (uncapped)`. Not yet tested.
 
+- **Graphics options in Options -> Gameplay (2026-10-14, Vulkan only):**
+  same settings as NFSU1/NFSU2/B3 (Car Reflections, Resolution Scale
+  1-2.5x, Anti-Aliasing = FXAA, Anisotropic Off-16x, Square Pixels), in
+  `nfscx_options.txt`, loaded at boot. Renderer synced to nfsu2-xbox's
+  picture-quality nv2a_vk.c (48b1b27..c99c2d6; Carbon's depth clamp and
+  linear-texture full hash kept). FE map: factory table 0x402218 (name,
+  creator); FeOptionsScreen.fng -> sub_001521C0, vtable 0x3B3880, instance
+  [0x46A8B4]; Setup sub_00154CF0 switches on [ecx+4] (0 audio, 3 gameplay,
+  4 player); AddOption(id) sub_0014E7A0 builds widgets per id and adds them
+  with sub_0014DB80("OPTION_%d" hash, widget). Settings DB 0x456830 by id
+  (get 0x7DD00, set 0x7DD50, default 0x7DEE0). Toggle class 0x3B0F58
+  (ctor 0x12A150, Draw 0x12A210, Act 0x12A190, Reset 0x12A3B0; +0xC label
+  hash, +0x1C value text, +0x74 id). Our rows: ids 0x7A00+, appended after
+  0x13B0; texts are our own hashes answered by the language binary search
+  sub_0011F9A0 (edi table, ecx count, edx hash). GetLocalizedString =
+  sub_0011FAB0. Car Reflections Off is renderer-side only (the game still
+  renders its cube faces).
+
 ## Status (2026-10-03)
 
 - Linux: intro FMV, title, pad works (Start -> profile prompt -> Career menu

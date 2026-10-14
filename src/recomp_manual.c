@@ -975,6 +975,410 @@ void sub_00399A64(void)
     esp += 4;
 }
 
+/* ── Port options in Options -> Gameplay ─────────────────────
+ *
+ * The picture settings of the NFSU1/NFSU2/Burnout 3 ports, as rows of the
+ * Gameplay screen. FeOptionsScreen.fng (factory table 0x402218 -> creator
+ * sub_001521C0, class vtable 0x3B3880, instance at [0x46A8B4]) is filled by
+ * sub_00154CF0, a switch on the category at [ecx+4] (3 = Gameplay); each
+ * row is AddOption(id) = sub_0014E7A0 (thiscall, ret 4), which names the
+ * row "OPTION_%d" by a counter at screen+0x160, builds a widget for the id
+ * and adds it with sub_0014DB80(name hash, widget). The game's settings are
+ * kept by id in the database at 0x456830 (get sub_0007DD00, set
+ * sub_0007DD50); our ids (OPT_ID_BASE..) are not in it, so they never reach
+ * it.
+ *
+ * Our rows are on/off toggles of the game's own class (0x80 bytes, ctor
+ * sub_0012A150(&label hash, id, on text, off text, enabled), vtable
+ * 0x3B0F58): +0xC label hash, +0x1C value text object, +0x64 enabled,
+ * +0x74 id. Its Draw (vt+4, sub_0012A210), Act (vt+0x10, sub_0012A190:
+ * pad left/right) and Reset (vt+0x20, sub_0012A3B0, "restore defaults")
+ * are wrapped: for our ids they step our value instead of a database one.
+ * Labels and values are text hashes of our own; the language lookup
+ * sub_0011F9A0 (binary search, edi = table, ecx = count, edx = hash, used
+ * by every text lookup) answers them with our strings in guest memory.
+ * They are appended after the Gameplay screen's last row (0x13B0).
+ *
+ * Vulkan build only (renderer: nv2a_vk.c), as in the other ports: Car
+ * Reflections (nv2a_vk_cube_maps: cube stages sample black), Resolution
+ * Scale 1x/1.5x/2x/2.5x (nv2a_vk_scale_pct, applied at the next flip;
+ * without a saved value RECOMP_GL_SCALE rules and the row shows the
+ * nearest step), Anti-Aliasing = FXAA (nv2a_vk_fxaa), Anisotropic
+ * Off..16x (nv2a_vk_aniso), Square Pixels (nv2a_vk_square: 4/3 the
+ * columns in 16:9). The renderer's env switches still force each off.
+ *
+ * Kept in nfscx_options.txt (sdmc:/switch/nfscx/ on the Switch, the
+ * working directory elsewhere; reflections=, scale=, fxaa=, aniso=,
+ * square=), not in the profile; loaded at boot (nfscx_options_load,
+ * main.c). */
+#ifdef __SWITCH__
+#  define NFSCX_OPTIONS_FILE "sdmc:/switch/nfscx/nfscx_options.txt"
+#else
+#  define NFSCX_OPTIONS_FILE "nfscx_options.txt"
+#endif
+#define FE_PAD_LEFT     0x9120409Eu
+#define FE_PAD_RIGHT    0xB5971BF1u
+#define OPT_ID_BASE     0x00007A00u     /* our option ids */
+#define OPT_CAT_GAMEPLAY 3
+#define OPT_LAST_GAMEPLAY 0x13B0u       /* the Gameplay screen's last row */
+
+#ifdef NFSU2_VULKAN
+extern volatile int nv2a_vk_cube_maps;
+extern volatile int nv2a_vk_scale_pct;
+extern volatile int nv2a_vk_fxaa;
+extern volatile int nv2a_vk_aniso;
+extern volatile int nv2a_vk_square;
+#endif
+extern uint32_t xbox_ContiguousAlloc(uint32_t size, uint32_t alignment);
+extern void sub_00154CF0_gen(void);
+extern void sub_0014E7A0_gen(void);
+extern void sub_0012A210_gen(void);
+extern void sub_0012A190_gen(void);
+extern void sub_0012A3B0_gen(void);
+extern void sub_0011F9A0_gen(void);
+
+static const int s_scale_pct[] = { 100, 150, 200, 250 };
+static const int s_aniso_lvl[] = { 1, 2, 4, 8, 16 };
+
+static int s_refl = 1;                  /* 0 off, 1 on */
+static int s_scale_idx = 1;             /* into s_scale_pct: 1.5x */
+static int s_scale_saved;               /* nfscx_options.txt had scale= */
+static int s_fxaa = 1;                  /* 0 off, 1 on */
+static int s_aniso_idx = 4;             /* into s_aniso_lvl: 16x */
+static int s_square = 1;                /* 0 off, 1 on */
+
+typedef struct {
+    const char *label;
+    const char *const *texts;
+    int n;
+    int *value;
+    int dflt;
+    void (*changed)(void);
+} OptRow;
+
+#ifdef NFSU2_VULKAN
+static void refl_changed(void)
+{
+    nv2a_vk_cube_maps = s_refl;
+}
+
+static void scale_changed(void)
+{
+    nv2a_vk_scale_pct = s_scale_pct[s_scale_idx];
+    s_scale_saved = 1;
+}
+
+static void picture_changed(void)
+{
+    nv2a_vk_fxaa = s_fxaa;
+    nv2a_vk_aniso = s_aniso_lvl[s_aniso_idx];
+    nv2a_vk_square = s_square;
+}
+
+static const char *const s_onoff[] = { "Off", "On" };
+static const char *const s_scale_texts[] = { "1x", "1.5x", "2x", "2.5x" };
+static const char *const s_aniso_texts[] = { "Off", "2x", "4x", "8x", "16x" };
+static const OptRow s_rows[] = {
+    { "Car Reflections", s_onoff, 2, &s_refl, 1, refl_changed },
+    { "Resolution Scale", s_scale_texts, 4, &s_scale_idx, 1, scale_changed },
+    { "Anti-Aliasing", s_onoff, 2, &s_fxaa, 1, picture_changed },
+    { "Anisotropic", s_aniso_texts, 5, &s_aniso_idx, 4, picture_changed },
+    { "Square Pixels", s_onoff, 2, &s_square, 1, picture_changed },
+};
+#define N_ROWS ((int)(sizeof s_rows / sizeof s_rows[0]))
+#else
+static const OptRow s_rows[1];
+#define N_ROWS 0
+#endif
+
+static void options_log(void)
+{
+#ifdef NFSU2_VULKAN
+    fprintf(stderr, "[options] car reflections %s, resolution scale %d%%%s, anti-aliasing %s,"
+            " anisotropic %dx, square pixels %s\n",
+            s_refl ? "on" : "off", s_scale_pct[s_scale_idx],
+            nv2a_vk_scale_pct ? "" : " (RECOMP_GL_SCALE)", s_fxaa ? "on" : "off",
+            s_aniso_lvl[s_aniso_idx], s_square ? "on" : "off");
+#endif
+}
+
+void nfscx_options_load(void)
+{
+#ifdef NFSU2_VULKAN
+    char line[128];
+    FILE *f = fopen(NFSCX_OPTIONS_FILE, "r");
+    int i;
+
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            if (!strncmp(line, "reflections=", 12))
+                s_refl = line[12] != '0';
+            else if (!strncmp(line, "fxaa=", 5))
+                s_fxaa = line[5] != '0';
+            else if (!strncmp(line, "square=", 7))
+                s_square = line[7] != '0';
+            else if (!strncmp(line, "aniso=", 6)) {
+                int a = atoi(line + 6);
+                for (i = 0; i < 5; i++)
+                    if (s_aniso_lvl[i] == a)
+                        s_aniso_idx = i;
+            }
+            else if (!strncmp(line, "scale=", 6)) {
+                int pct = atoi(line + 6);
+                for (i = 0; i < 4; i++)
+                    if (s_scale_pct[i] == pct) {
+                        s_scale_idx = i;
+                        s_scale_saved = 1;
+                    }
+            }
+        }
+        fclose(f);
+    }
+    refl_changed();
+    {
+        const char *e = getenv("RECOMP_GL_SCALE");
+        if (!s_scale_saved && e && *e) {
+            /* RECOMP_GL_SCALE stays in charge until the option is changed;
+             * the row shows the nearest step. */
+            double k = strtod(e, NULL), best = 1e9;
+            for (i = 0; i < 4; i++) {
+                double d = fabs(k * 100.0 - s_scale_pct[i]);
+                if (d < best) { best = d; s_scale_idx = i; }
+            }
+        } else {
+            nv2a_vk_scale_pct = s_scale_pct[s_scale_idx];
+        }
+    }
+    picture_changed();
+    options_log();
+#endif
+}
+
+static void options_save(void)
+{
+#ifdef NFSU2_VULKAN
+    FILE *f = fopen(NFSCX_OPTIONS_FILE, "w");
+    if (!f) {
+        fprintf(stderr, "[options] cannot write " NFSCX_OPTIONS_FILE "\n");
+        return;
+    }
+    fprintf(f, "reflections=%d\n", s_refl);
+    if (s_scale_saved)
+        fprintf(f, "scale=%d\n", s_scale_pct[s_scale_idx]);
+    fprintf(f, "fxaa=%d\naniso=%d\nsquare=%d\n", s_fxaa, s_aniso_lvl[s_aniso_idx], s_square);
+    fclose(f);
+#endif
+}
+
+/* Our texts: a hash of our own for each (the game's bStringHash of a
+ * prefixed key, so the language tables never have it) and a copy in guest
+ * memory, made on first use. */
+#define OPT_MAX_TEXTS 32
+static struct { const char *s; uint32_t hash, va; } s_texts[OPT_MAX_TEXTS];
+static int s_n_texts;
+static uint32_t s_text_lo = 0xFFFFFFFFu, s_text_hi;
+
+static uint32_t opt_text(const char *s)
+{
+    uint32_t h = 0xFFFFFFFFu;
+    const char *p;
+    int i;
+
+    for (i = 0; i < s_n_texts; i++)
+        if (s_texts[i].s == s)
+            return s_texts[i].hash;
+    if (s_n_texts == OPT_MAX_TEXTS)
+        return 0;
+    for (p = "NFSCX_OPT_"; *p; p++)
+        h = h * 33u + (uint8_t)*p;
+    for (p = s; *p; p++)
+        h = h * 33u + (uint8_t)*p;
+    s_texts[s_n_texts].s = s;
+    s_texts[s_n_texts].hash = h;
+    s_texts[s_n_texts].va = 0;
+    s_n_texts++;
+    if (h < s_text_lo) s_text_lo = h;
+    if (h > s_text_hi) s_text_hi = h;
+    return h;
+}
+
+static uint32_t opt_text_va(uint32_t hash)
+{
+    static uint32_t pool, used;
+    int i;
+
+    if (hash < s_text_lo || hash > s_text_hi)
+        return 0;
+    for (i = 0; i < s_n_texts; i++) {
+        size_t n;
+        if (s_texts[i].hash != hash)
+            continue;
+        if (s_texts[i].va)
+            return s_texts[i].va;
+        n = strlen(s_texts[i].s) + 1;
+        if (!pool && !(pool = xbox_ContiguousAlloc(0x400u, 16)))
+            return 0;
+        if (used + n > 0x400u)
+            return 0;
+        memcpy((void *)XBOX_PTR(pool + used), s_texts[i].s, n);
+        s_texts[i].va = pool + used;
+        used += (uint32_t)n;
+        return s_texts[i].va;
+    }
+    return 0;
+}
+
+static const OptRow *opt_row(uint32_t widget)
+{
+    uint32_t id = MEM32(widget + 0x74u);
+    return id - OPT_ID_BASE < (uint32_t)N_ROWS ? &s_rows[id - OPT_ID_BASE] : NULL;
+}
+
+/* One of our rows, as AddOption builds the game's toggles. */
+static void opt_add(uint32_t screen, int i)
+{
+    uint32_t n = MEM32(screen + 0x160u) + 1u, name, w;
+
+    MEM32(screen + 0x160u) = n;
+    PUSH32(esp, n);
+    PUSH32(esp, 0x003B38D8u);               /* "OPTION_%d" */
+    PUSH32(esp, 0x0014E7D8u);
+    sub_0011AC30();                         /* its hash, cdecl */
+    esp += 8;
+    name = eax;
+    PUSH32(esp, 0x80u);                     /* operator new, cdecl */
+    PUSH32(esp, 0x0014E812u);
+    sub_000498C0();
+    esp += 4;
+    w = eax;
+    if (!w)
+        return;
+    esp -= 4;                               /* the label hash, by pointer */
+    MEM32(esp) = opt_text(s_rows[i].label);
+    {
+        uint32_t label = esp;
+        PUSH32(esp, 1);                     /* enabled */
+        PUSH32(esp, 0);                     /* off/on texts: our Draw's */
+        PUSH32(esp, 0);
+        PUSH32(esp, OPT_ID_BASE + (uint32_t)i);
+        PUSH32(esp, label);
+        ecx = w;
+        PUSH32(esp, 0x0014EB48u);
+        sub_0012A150();                     /* thiscall, pops its 5 */
+    }
+    esp += 4;
+    PUSH32(esp, w);
+    PUSH32(esp, name);
+    ecx = screen;
+    PUSH32(esp, 0x0014EB75u);
+    sub_0014DB80();                         /* thiscall, pops its 2 */
+}
+
+/* Options setup (thiscall, category at [ecx+4]). */
+static int s_opt_cat = -1;
+
+void sub_00154CF0(void)
+{
+    s_opt_cat = (int)MEM32(ecx + 4u);
+    sub_00154CF0_gen();
+    s_opt_cat = -1;
+}
+
+/* AddOption (thiscall, id, ret 4): ours after the Gameplay screen's last. */
+void sub_0014E7A0(void)
+{
+    uint32_t screen = ecx, id = MEM32(esp + 4);
+    int i;
+
+    sub_0014E7A0_gen();
+    if (id == OPT_LAST_GAMEPLAY && s_opt_cat == OPT_CAT_GAMEPLAY)
+        for (i = 0; i < N_ROWS; i++)
+            opt_add(screen, i);
+}
+
+/* Toggle Draw (thiscall, ret): the value text. */
+static void opt_draw(uint32_t w, const OptRow *o)
+{
+    PUSH32(esp, opt_text(o->texts[*o->value]));
+    PUSH32(esp, MEM32(w + 0x1Cu));
+    PUSH32(esp, 0x0012A24Au);
+    sub_00125390();                         /* cdecl */
+    esp += 8;
+}
+
+void sub_0012A210(void)
+{
+    const OptRow *o = opt_row(ecx);
+
+    if (!o) {
+        sub_0012A210_gen();
+        return;
+    }
+    opt_draw(ecx, o);
+    esp += 4;
+}
+
+/* Toggle Act (thiscall, (?, message), ret 8): left/right step the value
+ * (wrapping), then vt+0x38 with the message and Draw, as the original. */
+void sub_0012A190(void)
+{
+    uint32_t w = ecx, msg = MEM32(esp + 8);
+    const OptRow *o = opt_row(w);
+    recomp_func_t fn;
+
+    if (!o) {
+        sub_0012A190_gen();
+        return;
+    }
+    if (MEM8(w + 0x64u) && (msg == FE_PAD_LEFT || msg == FE_PAD_RIGHT)) {
+        *o->value = (*o->value + (msg == FE_PAD_RIGHT ? 1 : o->n - 1)) % o->n;
+        o->changed();
+        options_save();
+        options_log();
+        if ((fn = recomp_lookup(MEM32(MEM32(w) + 0x38u))) != NULL) {
+            PUSH32(esp, msg);
+            ecx = w;
+            PUSH32(esp, 0x0012A1F7u);
+            fn();                           /* thiscall, pops its 1 */
+        }
+        opt_draw(w, o);
+    }
+    esp += 4 + 8;
+}
+
+/* Toggle Reset (thiscall, ret): "restore defaults". */
+void sub_0012A3B0(void)
+{
+    const OptRow *o = opt_row(ecx);
+
+    if (!o) {
+        sub_0012A3B0_gen();
+        return;
+    }
+    if (*o->value != o->dflt) {
+        *o->value = o->dflt;
+        o->changed();
+        options_save();
+        options_log();
+    }
+    opt_draw(ecx, o);
+    esp += 4;
+}
+
+/* Language lookup (edi = {hash, text} table, ecx = count, edx = hash ->
+ * eax = text): our hashes first. */
+void sub_0011F9A0(void)
+{
+    uint32_t va = opt_text_va(edx);
+
+    if (!va) {
+        sub_0011F9A0_gen();
+        return;
+    }
+    eax = va;
+    esp += 4;
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*

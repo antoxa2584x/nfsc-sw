@@ -11,7 +11,7 @@ instruction by instruction to C and running natively, with no emulator.
 ![Linux](https://img.shields.io/badge/Linux-x86__64-FCC624?logo=linux&logoColor=black)
 ![Vulkan](https://img.shields.io/badge/Vulkan-1.3-AC162C?logo=vulkan&logoColor=white)
 ![OpenGL](https://img.shields.io/badge/OpenGL-renderer-5586A4?logo=opengl&logoColor=white)
-![Version](https://img.shields.io/badge/version-0.2-blue)
+![Version](https://img.shields.io/badge/version-0.2.3-blue)
 
 [Features](#-features) · [Playing on Switch](#-playing-on-switch) · [Building](#%EF%B8%8F-building) · [Configuration](#%EF%B8%8F-configuration) · [Status](#-status)
 
@@ -29,6 +29,12 @@ instruction by instruction to C and running natively, with no emulator.
   [xboxrecomp](https://github.com/sp00nznet/xboxrecomp)
 - 🎮 **Two renderers**: Vulkan (NVK on Switch) and OpenGL, with render scaling
   up to 4x
+- 🖼️ **Cleaner picture** (Vulkan): mipmaps with trilinear and 16x
+  anisotropic filtering, FXAA, square-pixel 1280x720 for the 16:9 view
+- ⚙️ **Graphics options in the game** (Vulkan), under **Options → Gameplay**:
+  Car Reflections, Resolution Scale (1x, 1.5x, 2x, 2.5x), Anti-Aliasing,
+  Anisotropic (Off-16x) and Square Pixels, applied at once and kept in
+  `nfscx_options.txt` (same settings as the NFSU1, NFSU2 and Burnout 3 ports)
 - 🔊 **Audio** through an emulated Xbox APU, with 5.1 downmixed to stereo
 - 🕹️ **Pads** through an emulated Xbox USB host (OHCI), Joy-Con and Pro
   Controller on Switch, SDL controllers on Linux
@@ -100,7 +106,7 @@ VULKAN=1 JOBS=6 NFSU2_GEN_DIR=/path/to/gen switch/build.sh
 | Path | What |
 |---|---|
 | `src/main.c` | boot and runtime defaults |
-| `src/recomp_manual.c` | hand-written overrides of lifted functions (D3D/DSOUND/XPP library hooks, DSOUND watchdog skip, native leaf functions) |
+| `src/recomp_manual.c` | hand-written overrides of lifted functions (D3D/DSOUND/XPP library hooks, DSOUND watchdog skip, native leaf functions, the Options → Gameplay graphics rows) |
 | `src/switch_nx.c` | Switch log device, env file, exception handler, loading screen |
 | `config/seed_functions.json` | entry points the static pass cannot see |
 | `xboxrecomp/` | the toolkit (MIT), vendored with this port's changes: NV2A renderers (Vulkan, OpenGL), SDL audio, Switch platform layer, kernel and translator fixes |
@@ -206,7 +212,14 @@ RECOMP_GL_SCALE=1.5
 | Variable | Meaning |
 |---|---|
 | `RECOMP_PB_EXEC` | Execute the NV2A pushbuffer (default 1; the title draws through it). |
-| `RECOMP_GL_SCALE` | Render resolution multiple, 0.5..4 (fractions allowed). |
+| `RECOMP_GL_SCALE` | Render resolution multiple, 0.5..4 (fractions allowed). Vulkan: only until Options → Gameplay → Resolution Scale is changed (default there 1.5x). |
+| `RECOMP_GL_SCALE_X` | Vulkan: horizontal multiple, if different; overrides Square Pixels. |
+| `RECOMP_VK_SQUARE=0` | Vulkan: no square pixels in 16:9, whatever Options → Gameplay says. |
+| `RECOMP_VK_MIPS=0` | Vulkan: no mipmaps (distant textures shimmer, the old look). |
+| `RECOMP_VK_ANISO` | Vulkan: anisotropic filtering, 1..16 (default 16; 1 = off). |
+| `RECOMP_VK_LOD_BIAS` | Vulkan: mip bias, negative = sharper (default -0.25). |
+| `RECOMP_VK_FXAA=0` | Vulkan: no FXAA (plain scaled blit to the screen). |
+| `RECOMP_VK_FXAA_SUBPIX` | Vulkan: FXAA sub-pixel smoothing (default 0.25). |
 | `RECOMP_GL_THREAD=1` | GL renderer: GL calls on their own thread. |
 | `RECOMP_GL_DIRECT=0` | Convert every vertex to float4 instead of uploading it as stored. |
 | `RECOMP_GL_DXT=0` | Decode DXT textures on the CPU instead of uploading them compressed. |
