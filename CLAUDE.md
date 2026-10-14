@@ -190,6 +190,12 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   0x312D7B, 0x325469, 0x2F6BE6 (after a no-return call + int3), XPP 0x39B15C,
   0x39BD9A, ...
 
+- **Up to 60 fps (2026-10-14, recomp_manual.c sub_003625C0 PGRAPH wrapper,
+  from NFSU2 v0.5.9):** the game asks D3D for a 2-vblank presentation
+  interval; the flip NOP trap carries it as (bits << 5) | 1 and the wrapper
+  rewrites it to 1 in TRAPPED_DATA. `NFSU2_FPS_CAP=30` keeps the title's.
+  Log `[fps] flip interval 2 -> 1 vblank (uncapped)`. Not yet tested.
+
 ## Status (2026-10-03)
 
 - Linux: intro FMV, title, pad works (Start -> profile prompt -> Career menu

@@ -149,6 +149,7 @@ RECOMP_GL_SCALE=1.5
 |---|---|
 | `NFSU2_GAME_DIR` | Extracted disc (Linux; default `./game`). The Switch always uses `sdmc:/switch/nfscx/game/`. |
 | `NFSU2_GL=0` | Use the executor's CPU renderer instead of the GPU renderer. |
+| `NFSU2_FPS_CAP=30` | Keep the game's 30 fps cap (default: uncapped, up to 60 fps). |
 | `NFSU2_APU=0` | With `RECOMP_AC97_READY=plain`: no emulated APU (no sound). |
 | `NFSU2_SIM_STEPS` | Longest game-time step per frame, in 1/60 s (default 6 = 100 ms; 3 = the original 50 ms cap, which slows races below 20 fps). |
 | `NFSU2_EXIT_TRACE=1` | Print the guest state at exit. |

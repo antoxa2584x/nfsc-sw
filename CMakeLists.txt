@@ -43,6 +43,7 @@ set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
     src/switch_nx.c
+    src/switch_saltynx.c
 )
 
 if(WIN32)
@@ -127,7 +128,7 @@ if(NINTENDO_SWITCH)
     # The release lives here, not in the cache: a cached default stays at
     # whatever the build directory was first configured with.
     # -DNFSU2_SWITCH_VERSION_OVERRIDE=x sets another one.
-    set(NFSU2_SWITCH_VERSION "0.2.1")
+    set(NFSU2_SWITCH_VERSION "0.2.2")
     if(NFSU2_SWITCH_VERSION_OVERRIDE)
         set(NFSU2_SWITCH_VERSION "${NFSU2_SWITCH_VERSION_OVERRIDE}")
     endif()

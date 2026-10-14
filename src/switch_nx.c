@@ -30,6 +30,10 @@
 
 #include "apu_xaudio2.h"
 
+/* switch_saltynx.c: the frame rate for Status Monitor through SaltyNX. */
+void switch_saltynx_start(void);
+void switch_saltynx_stop(void);
+
 #define NFSU2_SWITCH_DIR "sdmc:/switch/nfscx"
 
 extern ptrdiff_t g_xbox_mem_offset;
@@ -1189,6 +1193,7 @@ void switch_boot(void)
                (unsigned long)(total >> 20), (unsigned long)(used >> 20));
     }
     clk_apply();
+    switch_saltynx_start();
     loader_start();
     prof_start();
 }
@@ -1215,6 +1220,7 @@ void switch_error_dialog(const char *msg, const char *details)
 
 void switch_shutdown(void)
 {
+    switch_saltynx_stop();
     clk_restore();
     log_flush(1);
     socketExit();

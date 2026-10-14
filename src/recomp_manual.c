@@ -236,6 +236,25 @@ void sub_00362050(void)
  * it (nv2a_pb_exec.c). */
 extern void sub_003625C0_gen(void);
 extern void nv2a_pb_trap_lock(void);
+/* The frame-rate cap. Present turns D3D's presentation interval (1, 2, 4
+ * vblanks, bit 31 = flip at once when late) into a NOP trap word,
+ * (bits << 5) | 1 -- bits 0..2 = 1/2/3 for 1/2/4 vblanks, bit 3 =
+ * immediate -- and the flip queue schedules the flip that many vblanks
+ * after the last one. Carbon asks for 2 in races and the open world: 30 fps at most. The
+ * wrapper rewrites the interval to 1 as the trap is taken, so a frame ready
+ * in time shows on the next vblank (60 fps at most); slower frames are
+ * unchanged. NFSU2_FPS_CAP=30 keeps the title's interval. (Same D3D code
+ * and trap format as NFSU2.) */
+static int fps_cap_30(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("NFSU2_FPS_CAP");
+        v = e && atoi(e) == 30;
+        fprintf(stderr, "[fps] cap: %s\n", v ? "30 (title)" : "60 (NFSU2_FPS_CAP=30 for 30)");
+    }
+    return v;
+}
 extern void nv2a_pb_trap_unlock(void);
 extern void nv2a_pb_trap_taken(void);
 
@@ -249,6 +268,15 @@ void sub_003625C0(void)
 
     nv2a_pb_trap_lock();
     nsource = nv[0x400108 / 4];
+    if (nsource && (nv[0x400704 / 4] & 0xFFFFu) == 0x0100u && !fps_cap_30()) {
+        uint32_t data = nv[0x400708 / 4];
+        if ((data & 0x1Fu) == 1u && ((data >> 5) & 7u) > 1u) {
+            static int told;
+            nv[0x400708 / 4] = (data & ~(7u << 5)) | (1u << 5);   /* flip: 1 vblank */
+            if (!told++)
+                fprintf(stderr, "[fps] flip interval %u -> 1 vblank (uncapped)\n", (data >> 5) & 7u);
+        }
+    }
     sub_003625C0_gen();
     nv2a_pb_flip_retired(MEM32(blk + 0x1BC) - head);   /* a flip queued on its vblank retires at once */
     if (nsource)

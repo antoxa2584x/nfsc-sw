@@ -3180,6 +3180,11 @@ static void dump_surface(VkSurf *s, const char *path)
     vkFreeMemory(s_dev, mem, NULL);
 }
 
+/* The host's per-frame hook (switch_saltynx.c: the frame rate for SaltyNX
+ * overlays), with the rendered picture's size. Weak and undefined
+ * elsewhere: the call is skipped. */
+extern void nv2a_host_frame_presented(uint32_t width, uint32_t height) __attribute__((weak));
+
 static void vk_flip(void)
 {
     static int dump_every = -1;
@@ -3365,6 +3370,8 @@ static void vk_flip(void)
         pi.pImageIndices = &idx;
         VT("flip %u: vkQueuePresentKHR\n", s_frame);
         pr = vkQueuePresentKHR(s_queue, &pi);
+        if (nv2a_host_frame_presented)
+            nv2a_host_frame_presented(s && s_drew_any ? s->pw : 0, s && s_drew_any ? s->ph : 0);
         if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
             vkDeviceWaitIdle(s_dev);
             create_swapchain();
