@@ -214,6 +214,24 @@ https://github.com/antoxa2584x/nfsuc-sw (`main`, commits as
   sub_0011FAB0. Car Reflections Off is renderer-side only (the game still
   renders its cube faces).
 
+- **Split screen: player 2's half black (issue #8, fixed in VK,
+  2026-10-15):** not NFSU2's clip bug (that fix is here). Each player's
+  world is drawn with SET_SURFACE_CLIP = its 640x240 half, then a colour
+  pass (prog with the 1x256/256x1 ramps) per half samples the back buffer
+  as a linear 640x240 texture: player 2's at base + 240 * pitch
+  (0x836D4000 -> 0x8376A000; the overlay surface 0x8310C500 likewise).
+  surf_find wanted the surface's first byte, so that lookup fell back to
+  guest RAM (black) and painted the half black. Now surf_find_inside finds
+  the surface holding the address at the same pitch and the shader samples
+  with an offset (u_tscale[i].zw, VK only; GL still black there). Menu
+  path: Main Menu -> Quick Race -> A (Circuit) -> Game Mode right = Split
+  Screen -> A, P1 car + transmission, pad 2 Start, car, transmission.
+  Linux: `RECOMP_PAD_LIVE` lines starting `2 ` drive pad 2; keep it plugged
+  with `RECOMP_PAD2_SCRIPT="99999999:back:1"`. /root/nfscx/split.sh does
+  the path after menu.sh (check the main menu showed; boot timing varies).
+  SIGTERM does not stop a run: kill -9 by pid, and check `pgrep -x
+  nfsu2_recomp` (stale runs share run.log/pad.cmd).
+
 ## Status (2026-10-03)
 
 - Linux: intro FMV, title, pad works (Start -> profile prompt -> Career menu

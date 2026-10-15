@@ -370,16 +370,16 @@ static void pad_script_parse(int dev)
  * line "buttons:hold_ms" (same names as the script) is queued after the
  * previous live step, 250 ms apart; "&buttons:hold" starts at once, held
  * together with whatever else is active; "clear" drops pending steps.
- * Pad 1 only. */
+ * A leading "2 " sends the line to pad 2 (its own queue). */
 static void pad_live(int dev, unsigned long now)
 {
     static FILE *f;
     static int tried;
-    static unsigned long next;
-    char line[128];
+    static unsigned long next[USB_GAMEPADS];
+    char buf[128];
 
     if (dev)
-        return;
+        return;                         /* pad 1's poll reads for both */
     if (!tried) {
         const char *path = getenv("RECOMP_PAD_LIVE");
         tried = 1;
@@ -387,54 +387,66 @@ static void pad_live(int dev, unsigned long now)
             f = fopen(path, "r");
         if (s_script_count[0] < 0)
             pad_script_parse(0);
+        if (s_script_count[1] < 0)
+            pad_script_parse(1);
     }
     if (!f)
         return;
     clearerr(f);
-    while (fgets(line, sizeof line, f)) {
+    while (fgets(buf, sizeof buf, f)) {
+        static const char *const env[USB_GAMEPADS] = { "RECOMP_PAD_SCRIPT", "RECOMP_PAD2_SCRIPT" };
+        PadStep *steps;
         char spec[160];
-        int keep, i, n = 0;
+        const char *line = buf;
+        int keep, i, n = 0, d = 0;
         unsigned at;
 
+        if (line[0] == '2' && line[1] == ' ') {
+            d = 1;
+            line += 2;
+        }
+        steps = s_script_steps[d];
         /* Finished steps make room; "clear" also drops the pending ones. */
-        for (i = 0; i < s_script_count[0]; i++) {
-            const PadStep *st = &s_script_steps[0][i];
+        for (i = 0; i < s_script_count[d]; i++) {
+            const PadStep *st = &steps[i];
             if (st->at + st->hold > now
                     && !(strncmp(line, "clear", 5) == 0 && st->at > now))
-                s_script_steps[0][n++] = *st;
+                steps[n++] = *st;
         }
-        s_script_count[0] = n;
+        s_script_count[d] = n;
         if (strncmp(line, "clear", 5) == 0) {
-            next = now;
+            next[d] = now;
             continue;
         }
         if (n >= PAD_SCRIPT_MAX)
             break;
         keep = n;
-        at = (unsigned)(next > now ? next : now);
+        at = (unsigned)(next[d] > now ? next[d] : now);
         if (line[0] == '&')     /* "&buttons:hold" starts now, beside the queue */
             at = (unsigned)now;
         snprintf(spec, sizeof spec, "%u:%s", at, line[0] == '&' ? line + 1 : line);
         spec[strcspn(spec, "\r\n")] = 0;
         {   /* parse one step through the script parser */
             PadStep saved[PAD_SCRIPT_MAX];
-            const char *old = getenv("RECOMP_PAD_SCRIPT");
-            memcpy(saved, s_script_steps[0], sizeof saved);
-            setenv("RECOMP_PAD_SCRIPT", spec, 1);
-            pad_script_parse(0);
-            if (old) setenv("RECOMP_PAD_SCRIPT", old, 1);
-            else unsetenv("RECOMP_PAD_SCRIPT");
-            if (s_script_count[0] == 1) {
-                PadStep st = s_script_steps[0][0];
-                memcpy(s_script_steps[0], saved, sizeof saved);
-                s_script_steps[0][keep] = st;
-                s_script_count[0] = keep + 1;
+            const char *old = getenv(env[d]);
+            char *old_copy = old ? strdup(old) : NULL;
+            memcpy(saved, steps, sizeof saved);
+            setenv(env[d], spec, 1);
+            pad_script_parse(d);
+            if (old_copy) setenv(env[d], old_copy, 1);
+            else unsetenv(env[d]);
+            free(old_copy);
+            if (s_script_count[d] == 1) {
+                PadStep st = steps[0];
+                memcpy(steps, saved, sizeof saved);
+                steps[keep] = st;
+                s_script_count[d] = keep + 1;
                 if (line[0] != '&')
-                    next = st.at + st.hold + 250;
-                fprintf(stderr, "  PAD1: live step %d at %u ms\n", keep, st.at);
+                    next[d] = st.at + st.hold + 250;
+                fprintf(stderr, "  PAD%d: live step %d at %u ms\n", d + 1, keep, st.at);
             } else {
-                memcpy(s_script_steps[0], saved, sizeof saved);
-                s_script_count[0] = keep;
+                memcpy(steps, saved, sizeof saved);
+                s_script_count[d] = keep;
             }
         }
     }

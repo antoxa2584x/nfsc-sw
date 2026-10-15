@@ -275,7 +275,10 @@ static void tex_fetch(Out *o, int t, uint32_t mode, const Nv2aPshKey *k)
     default: {                                       /* 2D (+ the rest, for now) */
         emit(o, "    vec2 tc%d = (abs(vT%d.w) > 1e-8 && %d == 1) ? vT%d.xy / vT%d.w : vT%d.xy;\n",
              t, t, mode == 1 ? 1 : 0, t, t, t);
-        emit(o, "    vec4 T%d = texture(t%d, tc%d * u_tscale[%d]);\n", t, t, t, t);
+        if (nv2a_shader_vk)     /* zw: where a texture inside a surface starts */
+            emit(o, "    vec4 T%d = texture(t%d, tc%d * u_tscale[%d].xy + u_tscale[%d].zw);\n", t, t, t, t, t);
+        else
+            emit(o, "    vec4 T%d = texture(t%d, tc%d * u_tscale[%d]);\n", t, t, t, t);
         break;
     }
     }
@@ -290,8 +293,8 @@ int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
     if (count > 8)
         count = 8;
     if (nv2a_shader_vk) {
-        /* Vulkan (nv2a_vk): std140 block at binding 1 -- vec2 array
-         * elements take 16 bytes -- and samplers at bindings 2..5,
+        /* Vulkan (nv2a_vk): std140 block at binding 1 -- u_tscale[i] is
+         * the texcoord scale (xy) and offset (zw) -- and samplers at bindings 2..5,
          * samplerCube for a CUBE_MAP stage. */
         emit(&o,
             "#version 450\n"
@@ -305,7 +308,7 @@ int nv2a_gl_psh(const Nv2aPshKey *k, char *buf, size_t cap)
                  i);
         emit(&o,
             "layout(std140, set = 0, binding = 1) uniform FsU {\n"
-            "    vec2 u_tscale[4];\n"
+            "    vec4 u_tscale[4];\n"
             "    vec4 u_c0[8]; vec4 u_c1[8];\n"
             "    vec4 u_fc0; vec4 u_fc1;\n"
             "    vec4 u_fogcolor;\n"

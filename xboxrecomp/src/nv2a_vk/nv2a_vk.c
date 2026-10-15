@@ -531,6 +531,32 @@ static VkSurf *surf_find(uint32_t va)
     return NULL;
 }
 
+/* A linear texture that starts inside a surface rather than at its first
+ * pixel: Carbon's split screen runs its colour pass over player 2's half
+ * with the back buffer sampled from row 240 (base + 240 * pitch). The
+ * surface whose rows hold va at the same pitch, and the texel va is at. */
+static VkSurf *surf_find_inside(uint32_t va, uint32_t pitch, uint32_t *x, uint32_t *y)
+{
+    VkSurf *best = NULL;
+    int i;
+
+    if (!pitch)
+        return NULL;
+    for (i = 0; i < VK_MAX_SURF; i++) {
+        const VkSurf *t = &s_surf[i];
+        if (!t->image || va <= t->va || pitch % t->w || va - t->va >= pitch * t->h)
+            continue;
+        if (!best || t->va > best->va)
+            best = &s_surf[i];
+    }
+    if (best) {
+        uint32_t off = va - best->va;
+        *y = off / pitch;
+        *x = off % pitch / (pitch / best->w);
+    }
+    return best;
+}
+
 static void clear_image_color(VkImage img, float r, float g, float b, float a)
 {
     VkClearColorValue c = { { r, g, b, a } };
@@ -1298,9 +1324,9 @@ static void rt_scale(uint32_t w, uint32_t h, uint32_t sw, uint32_t sh,
 volatile int nv2a_vk_cube_maps = 1;
 
 /* Stage i: its image view (a surface or a cached texture), sampler and
- * texcoord scale. Records uploads, so call it outside rendering or accept
+ * texcoord scale (xy) and offset (zw). Records uploads, so call it outside rendering or accept
  * that it ends the pass. */
-static void bind_stage(const uint32_t *regs, int i, float scale[2], VkDescriptorImageInfo *out,
+static void bind_stage(const uint32_t *regs, int i, float scale[4], VkDescriptorImageInfo *out,
                        VkSurf **sampled)
 {
     /* Texture mode CUBE_MAP: the shader declares a samplerCube (gl_psh.c),
@@ -1323,6 +1349,7 @@ static void bind_stage(const uint32_t *regs, int i, float scale[2], VkDescriptor
     VkSurf *rt;
 
     scale[0] = scale[1] = 1.0f;
+    scale[2] = scale[3] = 0.0f;
     out->imageView = cube ? s_dummy_cube_view : s_dummy_view;
     out->imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     out->sampler = sampler_get(0);
@@ -1352,6 +1379,14 @@ static void bind_stage(const uint32_t *regs, int i, float scale[2], VkDescriptor
     s_palette_reg = regs[base + 8];
     s_palette_va = s_batch->pal_va[i];
     rt = cube ? NULL : surf_find(va);
+    if (!rt && !cube && pitch) {
+        uint32_t ox, oy;
+        rt = surf_find_inside(va, pitch, &ox, &oy);
+        if (rt) {
+            scale[2] = (float)ox / (float)rt->w;
+            scale[3] = (float)oy / (float)rt->h;
+        }
+    }
     if (cube) {
         /* SET_TEXTURE_FORMAT bit 2: CUBEMAP_ENABLE; mip levels in [19:16]. */
         if (cube_on && (format & 4)) {
@@ -2946,7 +2981,7 @@ typedef struct {
 } VsBlock;
 
 typedef struct {
-    float tscale[4][4];          /* vec2 array: 16-byte elements */
+    float tscale[4][4];          /* per stage: scale xy, offset zw */
     float c0[8][4], c1[8][4];
     float fc0[4], fc1[4];
     float fog[4];
@@ -3150,7 +3185,7 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
     uint32_t n, i, cls;
     VkPrimitiveTopology topo;
     VkDescriptorImageInfo img[4];
-    float tscale[4][2];
+    float tscale[4][4];
     PipeKey key;
     VkPipeline pipe;
     VkDescriptorBufferInfo ub[3];
@@ -3285,10 +3320,7 @@ static void vk_draw_raw(const Nv2aRawBatch *b)
             fb = (FsBlock *)map;
             if (!fb) return;
             memset(fb, 0, sizeof *fb);
-            for (i = 0; i < 4; i++) {
-                fb->tscale[i][0] = tscale[i][0];
-                fb->tscale[i][1] = tscale[i][1];
-            }
+            memcpy(fb->tscale, tscale, sizeof fb->tscale);
             for (i = 0; i < 8; i++) {
                 argb_vec4(r[0xA60 / 4 + i], fb->c0[i]);
                 argb_vec4(r[0xA80 / 4 + i], fb->c1[i]);
