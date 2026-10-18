@@ -248,11 +248,26 @@ int nv2a_gl_vsh_program(const uint32_t (*prog)[4], uint32_t slots,
     "    return w > 0.0 ? (trunc(sw / w * 16.0) / 16.0 - u_surf.w) * w : sw;\n" \
     "}\n"
 /* Vulkan: the scale may differ per axis (RECOMP_GL_SCALE_X), so y has its
- * own offset, u_snap_y. */
+ * own offset, u_snap_y. A constant shift cannot be right for every edge
+ * once the scale k reaches 2 (square pixels at 1.5x store 2x columns): an
+ * edge on a whole title pixel then lands on the centre of the last real
+ * column it should cover, and the right/bottom edge rule drops it -- the
+ * motion blur's small copies lost their last column, and the blur pulled
+ * that black in at the right of the screen (NFSU2 and Carbon). So each
+ * position moves by the smallest d that puts it where a title edge there
+ * would put it: between the centres of the real pixels at title pixel
+ * ceil(p - 0.5)'s first edge, i.e. p - d in (g - h, g + h] with h = 0.5/k
+ * (= 0.5 - offset). d = 0 when that allows (always at k = 1); half-pixel
+ * edges (D3D's) keep 0.5 - h. */
 #define NV2A_SNAP_VK_GLSL \
     "vec2 nv2a_snap(vec2 sw, float w) {\n" \
-    "    vec2 off = vec2(u_surf.w, u_snap_y);\n" \
-    "    return w > 0.0 ? (trunc(sw / w * 16.0) / 16.0 - off) * w : sw;\n" \
+    "    if (w <= 0.0) return sw;\n" \
+    "    vec2 h = vec2(0.5) - vec2(u_surf.w, u_snap_y);\n" \
+    "    vec2 p = trunc(sw / w * 16.0) / 16.0;\n" \
+    "    vec2 f = p - floor(p);\n" \
+    "    vec2 c = f - vec2(greaterThan(f, vec2(0.5)));\n" \
+    "    vec2 d = clamp(vec2(0.0), c - h, c + h - 1.0 / 64.0);\n" \
+    "    return (p - d) * w;\n" \
     "}\n"
 
 /* Everything around the program body: inputs, the register file, the ILU
